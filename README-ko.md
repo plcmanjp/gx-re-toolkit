@@ -89,6 +89,16 @@ Lab 모듈 CLI는 `explorer_diff`, `reference_query`, `census`, `r04_census`,
 
 ## 복구
 
+다른 PC에서는 이 저장소를 독립적으로 복원한 다음 빌드 전에 소비자가 요구하는
+검수된 commit을 선택한다. 승인 artifact pin을 최신 브랜치 tip으로 대체하지 않는다.
+
+```powershell
+git clone https://github.com/plcmanjp/gx-re-toolkit.git C:\Work\gx-re-toolkit
+git -C C:\Work\gx-re-toolkit rev-parse --show-toplevel
+git -C C:\Work\gx-re-toolkit remote get-url origin
+git -C C:\Work\gx-re-toolkit switch --detach <reviewed-commit>
+```
+
 이 checkout은 자체 Git 데이터베이스를 사용한다. 다른 저장소는 이 파일과
 커밋을 자동 백업하지 않는다. 작업 트리 밖에 명시적 ref Git bundle을 만들고
 별도 복원으로 commit/tree를 확인한다. 로컬 백업은 장치 외부 재해 복구가 아니다.

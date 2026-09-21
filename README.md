@@ -95,6 +95,17 @@ original legal text.
 
 ## Recovery
 
+On another machine, restore this repository independently, then select the
+reviewed commit required by the consumer before building. Do not substitute the
+latest branch tip for an approved artifact pin.
+
+```powershell
+git clone https://github.com/plcmanjp/gx-re-toolkit.git C:\Work\gx-re-toolkit
+git -C C:\Work\gx-re-toolkit rev-parse --show-toplevel
+git -C C:\Work\gx-re-toolkit remote get-url origin
+git -C C:\Work\gx-re-toolkit switch --detach <reviewed-commit>
+```
+
 This checkout uses its own Git database. Another repository does not
 automatically back up these files or commits. Create a Git bundle with explicit
 refs outside the working tree, restore it separately, and verify the commit/tree.
