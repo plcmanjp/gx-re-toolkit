@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gx3-fx5-parser-toolkit"
+version = "0.4.0"
+description = "Read-only GX3 safe archive and FX5 structural topology inspector"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+dependencies = []
+
+[project.scripts]
+gx3-fx5-inspect = "gx3_fx5_parser_toolkit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gx3_fx5_parser_toolkit = ["schemas/*.json", "_provenance.json"]

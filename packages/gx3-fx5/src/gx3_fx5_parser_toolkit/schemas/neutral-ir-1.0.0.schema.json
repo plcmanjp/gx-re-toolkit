@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/plcmanjp/001-plc-workspace/neutral-ir-1.0.0.schema.json",
+  "title": "GX3 Neutral IR 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_name", "schema_version", "producer", "input", "profile", "project", "pous", "comments", "labels", "findings", "coverage"],
+  "properties": {
+    "schema_name": {"const": "plcman.gx3.neutral-ir"},
+    "schema_version": {"const": "1.0.0"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "version", "source_commit"],
+      "properties": {
+        "package": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_id", "byte_count", "sha256", "read_only_unchanged"],
+      "properties": {
+        "display_id": {"type": "string", "minLength": 1},
+        "byte_count": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "read_only_unchanged": {"const": true}
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "contract_version", "family", "cpu_ui_selection", "language", "detector_status", "evidence"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1},
+        "contract_version": {"type": "string", "minLength": 1},
+        "family": {"type": "string", "minLength": 1},
+        "cpu_ui_selection": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 1},
+        "detector_status": {"enum": ["SUPPORTED", "UNSUPPORTED", "AMBIGUOUS"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/provenance"}}
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "provenance"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "pous": {"type": "array", "items": {"$ref": "#/$defs/pou"}},
+    "comments": {"type": "array", "items": {"$ref": "#/$defs/comment"}},
+    "labels": {"type": "array", "items": {"$ref": "#/$defs/label"}},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "pou", "record", "comment", "label"],
+      "properties": {
+        "project": {"$ref": "#/$defs/coverageCount"},
+        "pou": {"$ref": "#/$defs/coverageCount"},
+        "record": {"$ref": "#/$defs/coverageCount"},
+        "comment": {"$ref": "#/$defs/coverageCount"},
+        "label": {"$ref": "#/$defs/coverageCount"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"profile": {"properties": {"detector_status": {"not": {"const": "SUPPORTED"}}}}}},
+      "then": {
+        "properties": {
+          "findings": {
+            "contains": {"type": "object", "required": ["finding_code", "object_kind"], "properties": {"finding_code": {"const": "MINING_REQUIRED"}, "object_kind": {"const": "profile"}}},
+            "minContains": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_entry", "source_store", "source_locator", "source_digest", "relation_evidence"],
+      "properties": {
+        "source_entry": {"type": "string", "minLength": 1},
+        "source_store": {"type": "string", "minLength": 1},
+        "source_locator": {"type": "string", "minLength": 1},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "relation_evidence": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "coverageCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "decoded", "partial", "unknown"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "decoded": {"type": "integer", "minimum": 0},
+        "partial": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_code", "scope", "object_kind", "locator", "digest", "reason"],
+      "properties": {
+        "finding_code": {
+          "enum": ["MINING_REQUIRED", "SOURCE_GLOBAL_ORDER_NOT_SERIALIZED"]
+        },
+        "scope": {"type": "string", "minLength": 1},
+        "object_kind": {"enum": ["profile", "topology", "record", "opcode", "operand", "comment", "label", "parameter"]},
+        "locator": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "operand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "raw_token", "kind", "value", "width", "indirection", "index", "provenance"],
+      "properties": {
+        "position": {"type": "integer", "minimum": 0},
+        "raw_token": {"type": "string"},
+        "kind": {"type": ["string", "null"]},
+        "value": {"type": ["string", "integer", "number", "boolean", "null"]},
+        "width": {"type": ["integer", "null"], "minimum": 0},
+        "indirection": {"type": ["boolean", "null"]},
+        "index": {"type": ["string", "integer", "null"]},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "sequence", "kind", "step", "opcode", "operands", "text", "provenance", "status", "continues_record_id"],
+      "properties": {
+        "record_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["instruction", "statement", "note", "continuation", "opaque"]},
+        "step": {"type": ["integer", "null"], "minimum": 0},
+        "opcode": {"type": ["string", "null"]},
+        "operands": {"type": "array", "items": {"$ref": "#/$defs/operand"}},
+        "text": {"type": ["string", "null"]},
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "status": {"enum": ["decoded", "partial", "unknown"]},
+        "continues_record_id": {"type": ["string", "null"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "continuation"}}}, "then": {"properties": {"continues_record_id": {"type": "string", "minLength": 1}}}},
+        {"if": {"properties": {"kind": {"not": {"const": "continuation"}}}}, "then": {"properties": {"continues_record_id": {"type": "null"}}}},
+        {"if": {"properties": {"kind": {"const": "opaque"}}}, "then": {"properties": {"status": {"const": "unknown"}}}}
+      ]
+    },
+    "pou": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pou_id", "name", "language", "execution_order", "program_kind", "relations", "records", "findings"],
+      "properties": {
+        "pou_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 1},
+        "execution_order": {"type": "integer", "minimum": 0},
+        "program_kind": {"type": "string", "minLength": 1},
+        "relations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "records": {"type": "array", "items": {"$ref": "#/$defs/record"}},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+      }
+    },
+    "valueState": {"enum": ["OBJECT_ABSENT", "SLOT_ABSENT", "EMPTY_STRING", "VALUE_PRESENT", "EXPORT_ROW_OMITTED"]},
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "program_id", "device_id", "language_slot", "value_state", "value", "provenance"],
+      "properties": {
+        "scope": {"enum": ["common_device", "program_device"]},
+        "program_id": {"type": ["string", "null"]},
+        "device_id": {"type": "string", "minLength": 1},
+        "language_slot": {"type": "string", "minLength": 1},
+        "value_state": {"$ref": "#/$defs/valueState"},
+        "value": {"type": ["string", "null"]},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      },
+      "allOf": [
+        {"if": {"properties": {"value_state": {"const": "EMPTY_STRING"}}}, "then": {"properties": {"value": {"const": ""}}}},
+        {"if": {"properties": {"value_state": {"const": "VALUE_PRESENT"}}}, "then": {"properties": {"value": {"type": "string", "minLength": 1}}}},
+        {"if": {"properties": {"value_state": {"enum": ["OBJECT_ABSENT", "SLOT_ABSENT", "EXPORT_ROW_OMITTED"]}}}, "then": {"properties": {"value": {"type": "null"}}}}
+      ]
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "program_id", "label_id", "language_slot", "value_state", "value", "provenance"],
+      "properties": {
+        "scope": {"enum": ["global_label", "local_label"]},
+        "program_id": {"type": ["string", "null"]},
+        "label_id": {"type": "string", "minLength": 1},
+        "language_slot": {"type": "string", "minLength": 1},
+        "value_state": {"$ref": "#/$defs/valueState"},
+        "value": {"type": ["string", "null"]},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      },
+      "allOf": [
+        {"if": {"properties": {"value_state": {"const": "EMPTY_STRING"}}}, "then": {"properties": {"value": {"const": ""}}}},
+        {"if": {"properties": {"value_state": {"const": "VALUE_PRESENT"}}}, "then": {"properties": {"value": {"type": "string", "minLength": 1}}}},
+        {"if": {"properties": {"value_state": {"enum": ["OBJECT_ABSENT", "SLOT_ABSENT", "EXPORT_ROW_OMITTED"]}}}, "then": {"properties": {"value": {"type": "null"}}}}
+      ]
+    }
+  }
+}

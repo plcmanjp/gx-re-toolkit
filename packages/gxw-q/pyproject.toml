@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gxw-parser-toolkit"
+version = "0.1.0"
+description = "GX Works2 binary parser and candidate writer toolkit"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+dependencies = ["olefile>=0.46", "pywin32>=305; sys_platform == 'win32'"]
+
+[project.scripts]
+gxw-inspect = "gxw_ladder_reader:main"
+gxw-write = "gxw_ladder_writer:main"
+gxw-reference-ir = "gxw_reference_ir:main"
+gxw-encode = "wt9_fill_pou_body:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["gxw_ladder_reader", "gxw_ladder_writer", "gxw_pou_devmap", "gxw_reference_ir", "wt9_fill_pou_body"]
