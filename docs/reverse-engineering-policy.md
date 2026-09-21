@@ -1,9 +1,13 @@
-# 연구와 재배포 원칙
+# Research and redistribution policy
 
-파일 형식 상호운용을 위한 자작 구현과 최소 합성 회귀만 공개한다.
-원본 프로젝트, 고객 데이터, 공식 export, 제조사 바이너리, 매뉴얼 및 화면은
-포함하지 않는다. 보호된 프로젝트의 암호 또는 보안 기능을 우회하지 않는다.
+[English](reverse-engineering-policy.md) | [한국어](reverse-engineering-policy-ko.md)
 
-특정 판별표에 대한 권리 확인은 외부 자료의 재배포 허가로 확대하지 않는다.
-외부 구현의 코드를 포함하려면 정확한 파일과 버전의 권리 및 고지를 검토한다.
-법률적 불확실성은 기술 테스트 PASS로 해소하지 않는다.
+Publish only independently authored implementations for file-format
+interoperability and minimal synthetic regressions. Do not include original
+projects, customer data, official exports, manufacturer binaries, manuals, or
+screenshots. Do not bypass passwords or security features of protected projects.
+
+Confirmation of rights for a specific decision table does not authorize
+redistribution of external materials. Including code from an external
+implementation requires review of rights and notices for the exact files and
+versions. Passing technical tests does not resolve legal uncertainty.

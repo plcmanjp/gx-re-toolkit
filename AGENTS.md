@@ -1,5 +1,7 @@
 # Standalone engineering rules
 
+[English](AGENTS.md) | [한국어](AGENTS-ko.md)
+
 This repository is an independent offline toolkit. Do not load or modify a
 parent workspace, private corpus, customer data, or another Git repository.
 
