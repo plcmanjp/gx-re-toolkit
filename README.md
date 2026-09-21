@@ -6,7 +6,7 @@ An independent research toolkit for offline analysis of the explicitly supported
 Mitsubishi project formats. It is not affiliated with or endorsed by Mitsubishi
 Electric. Successful analysis does not establish a successful GX rebuild,
 agreement with official exports, approval for PLC use, or field safety.
-This is a local pre-publication candidate and requires publication approval.
+The source is published for offline research, not approved for field deployment.
 
 ## Packages
 
