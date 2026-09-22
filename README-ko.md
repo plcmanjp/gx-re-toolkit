@@ -59,12 +59,32 @@ python -m gx_re_lab.census --help
 python -m gx_re_lab.planner --help
 ```
 
+`gx3-r-inspect --summary`는 계산된 `FULL`, `PARTIAL`, `FATAL` 상태, R 프로필 지원
+판정, coverage 합계, finding 개수만 출력한다. 프로젝트 이름, record, operand,
+comment, label, archive 경로 및 그 밖의 프로젝트 문자열은 출력하지 않는다.
+완전한 익명화 보증은 아니므로 공유 전에 출력을 검토한다. 일반 출력은 완전한 R 분석을 포함한다.
+`--output`과 함께 사용하면 stdout은 summary를 유지하고 새 디렉터리에는 완전한 artifact가
+생성된다.
+
 Lab 모듈 CLI는 `explorer_diff`, `reference_query`, `census`, `r04_census`,
 `gxw_census`, `planner`, `coverage_ledger`, `external_compare`, `final_scope`,
 `lab`, `experiment`, `relation_audit`, `campaign_coverage`다.
 `gxw-inspect`와 `python -m gxw_pou_devmap`은 입력이 없으면 사용법과 종료 코드 1을 반환한다.
 작성 도구에는 원본 대신 폐기 가능한 복사본과 새 출력 경로만 전달한다.
 입출력 전체에 대한 원자적 hostile-filesystem 방어를 보장하지 않는다.
+
+GXW 단일명령의 `--all` 없는 `--apply`는 명령 경계와 복제 stream의 동등성을
+검증할 근거가 확보될 때까지 종료 코드 10으로 차단한다. dry-run은 byte 변경의
+탐색 미리보기이며 작성 승인이 아니다. 명시적 전역 치환은 기존 의미를 유지하며
+단일명령 편집을 대체하는 수단이 아니다.
+writer, fill, transpose는 임시 후보를 검증한 뒤 새 출력 경로에 발행한다.
+기존 출력은 거부하며 reader 실패, 예외 또는 30초 검증 timeout이면 발행하지 않는다.
+명시적 `--in-place`는 폐기 가능한 사본 전용이고 기존 `.bak`가 있으면 거부한다.
+후보 검증 후에만 백업을 만들고 입력 사본을 교체한다.
+`--in-place`와 `--out`은 함께 쓸 수 없다. 준비 중과 발행 직전의 입력 변경을
+해시로 검사하지만 파일시스템 잠금을 제공하는 것은 아니다.
+숫자 검사는 frame 범위 초과를 거부하고 유효한 음수의 2의 보수 표현을 보존한다.
+frame 폭이 CPU의 디바이스 또는 피연산자 지원 범위를 의미하지는 않는다.
 
 ## 검증과 공개 경계
 

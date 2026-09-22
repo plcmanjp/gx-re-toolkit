@@ -12,6 +12,10 @@ from .archive import sha256_file
 from .parser import parse, validate_ir
 
 
+_SUMMARY_COVERAGE_KINDS = ("project", "pou", "record", "comment", "label")
+_SUMMARY_COVERAGE_COUNTS = ("total", "decoded", "partial", "unknown")
+
+
 def _reparse(path: Path) -> bool:
     try:
         return path.is_symlink() or bool(getattr(path.stat(), "st_file_attributes", 0) & 0x400)
@@ -21,6 +25,38 @@ def _reparse(path: Path) -> bool:
 
 def canonical_json(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+
+
+def _summary_status(result: dict) -> str:
+    if result.get("status") == "FATAL":
+        return "FATAL"
+    coverage = result["coverage"]
+    incomplete = any(
+        coverage[kind]["partial"] or coverage[kind]["unknown"]
+        for kind in _SUMMARY_COVERAGE_KINDS
+    )
+    return "PARTIAL" if result["findings"] or incomplete else "FULL"
+
+
+def _summary_coverage(result: dict) -> dict[str, dict[str, int]] | None:
+    coverage = result.get("coverage")
+    if coverage is None:
+        return None
+    return {
+        kind: {count: coverage[kind][count] for count in _SUMMARY_COVERAGE_COUNTS}
+        for kind in _SUMMARY_COVERAGE_KINDS
+    }
+
+
+def _summary(result: dict) -> dict:
+    """Return the fixed public summary projection without project content."""
+    profile = result.get("profile")
+    return {
+        "status": _summary_status(result),
+        "support_status": profile["detector_status"] if profile else None,
+        "coverage": _summary_coverage(result),
+        "finding_count": len(result["findings"]),
+    }
 
 
 def publish_directory(target: Path, result: dict, source: Path | None = None) -> None:
@@ -101,7 +137,7 @@ def main() -> int:
     if args.output:
         try: publish_directory(args.output, result, args.input)
         except ValueError as error: parser.error(str(error))
-    print(canonical_json(result).decode("ascii"), end="")
+    print(canonical_json(_summary(result) if args.summary else result).decode("ascii"), end="")
     return 3 if any(item["reason"].startswith("FATAL:") for item in result["findings"]) else 0
 
 

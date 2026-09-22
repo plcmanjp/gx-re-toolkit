@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 'Source-derived parser observation.'
-import sys, os, io, shutil, argparse, subprocess, tempfile
+import sys, os, io, shutil, argparse, subprocess, tempfile, hashlib
 from pathlib import Path
 
 import olefile
@@ -16,6 +16,7 @@ _OP_BY_MNEM = {v: k for k, v in INSTR.items()}
 READER = _HERE / "gxw_ladder_reader.py"
 RW = storagecon.STGM_READWRITE | storagecon.STGM_SHARE_EXCLUSIVE
 CREATE = storagecon.STGM_CREATE | storagecon.STGM_WRITE | storagecon.STGM_SHARE_EXCLUSIVE
+SELF_CHECK_TIMEOUT_SECONDS = 30
 
 # 디바이스명(긴 것 먼저) → (typecode, radix). 인코더가 최장 매칭에 사용.
 _DEV_BY_NAME = sorted(((nm, (tc, radix)) for tc, (nm, radix) in DEVICE.items()),
@@ -24,6 +25,8 @@ _DEV_BY_NAME = sorted(((nm, (tc, radix)) for tc, (nm, radix) in DEVICE.items()),
 
 # ── 오퍼랜드 인코더 (리더 _read_operand/_format_base 의 정확한 역함수, 수식자 미지원 v1) ──
 def _frame(tc, val, w):
+    if not 0 <= val < (1 << (8 * w)):
+        raise ValueError(f"{w * 8}비트 프레임 범위 밖: {val}")
     f = 0x03 + w
     return bytes([f, tc]) + int(val).to_bytes(w, "little") + bytes([f])
 
@@ -40,9 +43,13 @@ def encode_operand(text):
             return _frame(0xe8, val, 1)
         if -0x8000 <= val <= 0xFFFF:
             return _frame(0xe8, val & 0xFFFF, 2)
-        return _frame(0xe9, val & 0xFFFFFFFF, 4)
+        if -0x80000000 <= val <= 0xFFFFFFFF:
+            return _frame(0xe9, val & 0xFFFFFFFF, 4)
+        raise ValueError(f"K 상수는 현재 프레임 범위 밖: {text}")
     if head == "H":                                  # 16진 상수
         val = int(t[1:], 16)
+        if not 0 <= val <= 0xFFFFFFFF:
+            raise ValueError(f"H 상수는 현재 프레임 범위 밖: {text}")
         if val <= 0xFF:
             return _frame(0xea, val, 1)
         if val <= 0xFFFF:
@@ -54,6 +61,8 @@ def encode_operand(text):
                 val = int(t[len(nm):], radix)
             except ValueError:
                 continue
+            if not 0 <= val <= 0xFFFFFFFF:
+                raise ValueError(f"디바이스 주소는 현재 프레임 범위 밖: {text}")
             w = 1 if val <= 0xFF else 2 if val <= 0xFFFF else 3 if val <= 0xFFFFFF else 4
             return _frame(tc, val, w)
     raise ValueError(f"미지원 오퍼랜드(수식자 포함은 v1 미지원 — --replace 바이트모드 사용): {text}")
@@ -96,15 +105,111 @@ def patch_hdb_substreams(hdb_bytes, targets, tmp):
         st = None
         tmp.unlink(missing_ok=True)
 
+def write_streams(dst, streams):
+    st = s = None
+    try:
+        st = pythoncom.StgOpenStorage(str(dst), None, RW)
+        for name, data in streams.items():
+            s = st.CreateStream(name, CREATE, 0, 0)
+            s.Write(data)
+            s = None
+        st.Commit(0)
+    finally:
+        s = None
+        st = None
+
+
 def write_top_hdb(dst, new_hdb):
-    st = pythoncom.StgOpenStorage(str(dst), None, RW)
-    s = st.CreateStream("_hdb", CREATE, 0, 0); s.Write(new_hdb); s = None
-    st.Commit(0); st = None
+    write_streams(dst, {"_hdb": new_hdb})
+
+
+def source_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _destination(src, out, in_place):
+    src = Path(src)
+    if not src.is_file():
+        raise ValueError(f"입력 파일이 아님: {src}")
+    if in_place:
+        if out is not None:
+            raise ValueError("--in-place와 --out은 함께 사용할 수 없음")
+        backup = src.with_suffix(src.suffix + ".bak")
+        if backup.exists():
+            raise FileExistsError(f"기존 백업을 보존하기 위해 중단: {backup}")
+        return src, backup
+    dst = Path(out) if out else src.with_name(src.stem + "-edited" + src.suffix)
+    if dst.exists():
+        raise FileExistsError(f"기존 출력을 보존하기 위해 중단: {dst}")
+    if not dst.parent.is_dir():
+        raise ValueError(f"출력 디렉터리가 없음: {dst.parent}")
+    return dst, None
+
+
+def prepare_candidate(src, out=None, in_place=False, default_suffix="-edited", expected_sha256=None):
+    src = Path(src)
+    expected_sha256 = expected_sha256 or source_sha256(src)
+    if not in_place and out is None:
+        out = src.with_name(src.stem + default_suffix + src.suffix)
+    dst, backup = _destination(src, out, in_place)
+    if source_sha256(src) != expected_sha256:
+        raise ValueError("입력이 준비 전 변경됨")
+    fd, name = tempfile.mkstemp(prefix=".gxw-candidate-", suffix=src.suffix, dir=dst.parent)
+    os.close(fd)
+    candidate = Path(name)
+    try:
+        shutil.copy2(src, candidate)
+        if source_sha256(candidate) != expected_sha256:
+            raise ValueError("후보 복사본이 입력 snapshot과 다름")
+        if source_sha256(src) != expected_sha256:
+            raise ValueError("입력이 후보 복사 중 변경됨")
+    except BaseException:
+        candidate.unlink(missing_ok=True)
+        raise
+    return candidate, dst, backup
+
+
+def discard_candidate(candidate):
+    Path(candidate).unlink(missing_ok=True)
+
+
+def publish_candidate(candidate, src, dst, backup=None, expected_sha256=None):
+    candidate, src, dst = Path(candidate), Path(src), Path(dst)
+    if expected_sha256 is not None and source_sha256(src) != expected_sha256:
+        raise ValueError("입력이 발행 직전 변경됨")
+    if backup is None:
+        if dst.exists():
+            raise FileExistsError(f"기존 출력을 보존하기 위해 중단: {dst}")
+        os.link(candidate, dst)
+        try:
+            candidate.unlink()
+        except BaseException as error:
+            try:
+                if dst.exists() and os.path.samefile(candidate, dst):
+                    dst.unlink()
+            except BaseException as rollback_error:
+                raise RuntimeError(f"후보 정리 실패 및 발행 rollback 실패: {rollback_error}") from error
+            raise RuntimeError("후보 정리 실패로 발행을 rollback함") from error
+        return
+    backup = Path(backup)
+    if backup.exists():
+        raise FileExistsError(f"기존 백업을 보존하기 위해 중단: {backup}")
+    os.link(src, backup)
+    try:
+        os.replace(candidate, src)
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
 
 
 def self_check(path):
     r = subprocess.run([sys.executable, str(READER), str(path)],
-                       capture_output=True, text=True, encoding="utf-8")
+                       capture_output=True, text=True, encoding="utf-8",
+                       timeout=SELF_CHECK_TIMEOUT_SECONDS)
     return r.returncode, r.stdout
 
 
@@ -116,6 +221,13 @@ def scan(hdb, subs, OLD):
 
 def do_replace(src, OLD, NEW, apply, in_place, out, allow_multi, allow_collision):
     assert OLD, "OLD 빈 패턴"
+    if in_place and out is not None:
+        print("  중단: --in-place와 --out은 함께 사용할 수 없음. 파일을 읽거나 쓰지 않음.")
+        return 8
+    if apply and not allow_multi:
+        print("  중단: 단일명령 --apply는 복제 stream 대응과 명령 경계 근거가 없어 임시 비활성화됨. 파일을 읽거나 쓰지 않음.")
+        return 10
+    input_sha256 = source_sha256(src)
     hdb = read_top(str(src), "_hdb")
     subs = hdb_substreams(hdb)
     total, where = scan(hdb, subs, OLD)
@@ -126,34 +238,42 @@ def do_replace(src, OLD, NEW, apply, in_place, out, allow_multi, allow_collision
     print(f"  NEW 기존 출현(충돌): {new_total}회")
     if total == 0:
         print("  중단: OLD 패턴 미발견(인코딩 폭 불일치 가능 — --find로 실제 바이트 확인)."); return 1
-    # 단일점 판정: 본체 다중표현(개별POU + 통합)이라 보통 2~3회. 그 이상이면 다중 명령 의심.
+    # dry-run 미리보기만 제한한다. 단일명령/복제 stream 대응의 동등성 근거는 아직 없다.
     if len(where) > 4 and not allow_multi:
-        print(f"  중단: {len(where)}개 substream에 출현 — 다중 명령/디바이스 의심. 의도시 --all."); return 2
+        print(f"  중단: {len(where)}개 substream에 출현 — 다중 substream 미리보기 제한; 단일명령/복제 대응 미확인."); return 2
     if new_total and not allow_collision:
         print("  중단: NEW가 이미 존재(충돌) — 의도시 --allow-collision."); return 3
 
     targets = {nm: d.replace(OLD, NEW) for nm, d in subs.items() if OLD in d}
     if not apply:
-        print("  [dry-run] --apply 없음 — 미작성. 미리보기만.")
+        print("  [dry-run] --apply 없음 — 미작성. 탐색 미리보기이며 작성 안전판정이 아님.")
         # 미리보기: 임시로 메모리에서 치환 후 디코드는 생략(파일 필요), 변경 요약만.
         print(f"  변경 예정 substreams: { {nm: (len(subs[nm]), len(targets[nm])) for nm in targets} }")
         return 0
 
-    if in_place:
-        bak = src.with_suffix(src.suffix + ".bak")
-        if not bak.exists():
-            shutil.copy2(src, bak); print(f"  백업: {bak.name}")
-        dst = src
-    else:
-        dst = out or src.with_name(src.stem + "-edited" + src.suffix)
-        shutil.copy2(src, dst)
-    with tempfile.TemporaryDirectory(prefix='gxw-write-') as temporary:
-        new_hdb = patch_hdb_substreams(hdb, targets, Path(temporary) / 'work.ole')
-    write_top_hdb(str(dst), new_hdb)
-    rc, sout = self_check(dst)
-    print(f"  작성: {dst}  ({dst.stat().st_size:,}B)  self-check rc={rc}")
-    print("  무결성 계층(CAB·서명·레지스트리·위치DB) 전부 불변 — GX Works2 실측 권장.")
-    return 0
+    candidate = None
+    try:
+        with tempfile.TemporaryDirectory(prefix='gxw-write-') as temporary:
+            new_hdb = patch_hdb_substreams(hdb, targets, Path(temporary) / 'work.ole')
+        candidate, dst, backup = prepare_candidate(src, out, in_place, expected_sha256=input_sha256)
+        write_top_hdb(candidate, new_hdb)
+        rc, sout = self_check(candidate)
+        if rc != 0:
+            print(f"  중단: self-check rc={rc}; 후보를 발행하지 않음.")
+            return 9
+        publish_candidate(candidate, src, dst, backup, input_sha256)
+        candidate = None
+        if backup is not None:
+            print(f"  백업: {backup.name}")
+        print(f"  작성: {dst}  ({dst.stat().st_size:,}B)  self-check rc={rc}")
+        print("  무결성 계층(CAB·서명·레지스트리·위치DB) 전부 불변 - GX Works2 실측 권장.")
+        return 0
+    except Exception as error:
+        print(f"  중단: 후보 작성/검증 실패: {error}")
+        return 9
+    finally:
+        if candidate is not None:
+            discard_candidate(candidate)
 
 
 def build_il_locator(il):

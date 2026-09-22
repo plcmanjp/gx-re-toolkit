@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 'Source-derived parser observation.'
-import sys, io, os, re, struct, shutil, hashlib, base64, argparse, tempfile
+import sys, io, os, re, struct, shutil, hashlib, base64, argparse, tempfile, subprocess
 from pathlib import Path
 
 import gxw_ladder_writer as W
@@ -96,7 +96,9 @@ _CMP_RE = re.compile(r'^(LD|AND|OR)(D?)(<>|>=|<=|=|>|<)$')
 
 
 def _frame(tc, val, w):
-    return bytes([0x03 + w, tc]) + (int(val) & ((1 << 8 * w) - 1)).to_bytes(w, "little") + bytes([0x03 + w])
+    if not 0 <= val < (1 << (8 * w)):
+        raise ValueError(f"{w * 8}비트 프레임 범위 밖: {val}")
+    return bytes([0x03 + w, tc]) + int(val).to_bytes(w, "little") + bytes([0x03 + w])
 
 
 # Source-derived parser observation.
@@ -105,7 +107,10 @@ MOD_UMODULE, MOD_DIGIT, MOD_ZINDEX, MOD_ZINDEX2, MOD_BIT = 0xf8, 0xf1, 0xf0, 0xf
 
 
 def _mod_frame(tc, val):
-    return bytes([0x04, tc, int(val) & 0xFF, 0x04])
+    val = int(val)
+    if not 0 <= val <= 0xFF:
+        raise ValueError(f"수식자 값은 0..255 범위여야 함: {val}")
+    return bytes([0x04, tc, val, 0x04])
 
 
 def _is_base_device(t):
@@ -144,10 +149,10 @@ def _enc_operand(op, is32):
     op = op.strip()
     h = op[0].upper()
     if h == "K" and re.match(r"^K-?\d+$", op):       # 순수 정수 상수 (digit수식 K{n}{dev}은 아래로)
-        v = int(op[1:]) & (0xFFFFFFFF if is32 else 0xFFFF)   # 음수 2의보수 마스킹
+        v = _checked_k_constant(op, is32)
         return _frame(0xe9 if is32 else 0xe8, v, _minw(v))   # 최소폭 1/2/3/4
     if h == "H" and re.match(r"^H[0-9A-Fa-f]+$", op):  # 16진 상수
-        v = int(op[1:], 16) & (0xFFFFFFFF if is32 else 0xFFFF)
+        v = _checked_h_constant(op, is32)
         return _frame(0xeb if is32 else 0xea, v, _minw(v))
     if h == "E" and re.match(r"^E[-+0-9.][0-9.eE+-]*$", op):  # 부동소수 상수 (4B IEEE LE)
         return _frame(0xec, struct.unpack("<I", struct.pack("<f", float(op[1:])))[0], 4)
@@ -166,6 +171,24 @@ def _enc_operand(op, is32):
 def _minw(v):
     """값(마스킹된 unsigned) → 최소 프레임 폭 바이트수."""
     return 1 if v <= 0xFF else 2 if v <= 0xFFFF else 3 if v <= 0xFFFFFF else 4
+
+
+def _checked_k_constant(op, is32):
+    bits = 32 if is32 else 16
+    value = int(op[1:])
+    lower, upper = -(1 << (bits - 1)), (1 << bits) - 1
+    if not lower <= value <= upper:
+        raise ValueError(f"K 상수는 현재 {bits}비트 프레임 범위 밖: {op}")
+    return value & upper
+
+
+def _checked_h_constant(op, is32):
+    bits = 32 if is32 else 16
+    value = int(op[1:], 16)
+    upper = (1 << bits) - 1
+    if not 0 <= value <= upper:
+        raise ValueError(f"H 상수는 현재 {bits}비트 프레임 범위 밖: {op}")
+    return value
 
 
 def _cmp_op_meta(fb):
@@ -208,10 +231,10 @@ def _enc_cmp_operand(op, is32):
     t = op.strip()
     h = t[0].upper()
     if h == "K" and re.match(r"^K-?\d+$", t):
-        v = int(t[1:]) & (0xFFFFFFFF if is32 else 0xFFFF)
+        v = _checked_k_constant(t, is32)
         return _frame(0xe9 if is32 else 0xe8, v, _minw(v))
     if h == "H" and re.match(r"^H[0-9A-Fa-f]+$", t):
-        v = int(t[1:], 16) & (0xFFFFFFFF if is32 else 0xFFFF)
+        v = _checked_h_constant(t, is32)
         return _frame(0xeb if is32 else 0xea, v, _minw(v))
     return _enc_operand(t, False)   # Source-derived parser observation.
 
@@ -672,6 +695,44 @@ def _patch_hdb_with_temporary(hdb, replacements, prefix):
         return W.patch_hdb_substreams(hdb, replacements, Path(temporary) / 'work.ole')
 
 
+def _history_with_stream_digests(gxw, replacements):
+    ole = olefile.OleFileIO(gxw)
+    try:
+        history = ole.openstream("history.xml").read().decode("utf-8")
+    finally:
+        ole.close()
+    for stream_name, payload in replacements.items():
+        digest = base64.b64encode(hashlib.md5(payload).digest()).decode()
+        history = re.sub(
+            rf"(<D_History\b[^>]*>\s*<iID>{stream_name}</iID>.*?)<iFileSize>\d+</iFileSize>(.*?)<szMD5val>[^<]+</szMD5val>",
+            lambda match: f"{match.group(1)}<iFileSize>{len(payload)}</iFileSize>{match.group(2)}<szMD5val>{digest}</szMD5val>",
+            history,
+            flags=re.S,
+        )
+    return history.encode("utf-8")
+
+
+def _write_check_publish(gxw, out, new_hdb, history, input_sha256=None):
+    candidate = None
+    try:
+        candidate, dst, backup = W.prepare_candidate(gxw, out, expected_sha256=input_sha256)
+        assert backup is None
+        W.write_streams(candidate, {"history.xml": history, "_hdb": new_hdb})
+        rc, sout = W.self_check(candidate)
+        if rc != 0:
+            print(f"  중단: self-check rc={rc}; 후보를 발행하지 않음.")
+            return 9, ""
+        W.publish_candidate(candidate, gxw, dst, expected_sha256=input_sha256)
+        candidate = None
+        return 0, sout
+    except Exception as error:
+        print(f"  중단: 후보 작성/검증 실패: {error}")
+        return 9, ""
+    finally:
+        if candidate is not None:
+            W.discard_candidate(candidate)
+
+
 def fill_res(d, tokens):
     """빈 .res(`<len> 04 34 02 04`)에 토큰 삽입 + len += len(tokens)."""
     marker = d.find(b"\x34\x02\x04"); assert marker > 0
@@ -695,6 +756,7 @@ def fill_prg(d, tokens):
 
 
 def fill_pou(gxw, pou, il, apply, out):
+    input_sha256 = W.source_sha256(gxw)
     streams = W.hdb_substreams(W.read_top(gxw, "_hdb"))
     pous = pou_streams(gxw)
     if pou not in pous or "res" not in pous[pou] or "prg" not in pous[pou]:
@@ -708,25 +770,19 @@ def fill_pou(gxw, pou, il, apply, out):
     if not apply:
         print(f"  [dry-run] .res {len(streams[res_n])}→{len(new_res)}B · .Program.pou {len(streams[prg_n])}→{len(new_prg)}B. --apply로 작성.")
         return 0
-    dst = out or (os.path.splitext(gxw)[0] + "-filled.gxw")
-    shutil.copy2(gxw, dst)
     hdb = W.read_top(gxw, "_hdb")
     new_hdb = _patch_hdb_with_temporary(hdb, {res_n: new_res, prg_n: new_prg}, 'gxw-fill-')
-    ole = olefile.OleFileIO(gxw); hist = ole.openstream("history.xml").read().decode("utf-8"); ole.close()
-    for sn, nb in [(res_n, new_res), (prg_n, new_prg)]:
-        md = base64.b64encode(hashlib.md5(nb).digest()).decode()
-        hist = re.sub(rf"(<D_History\b[^>]*>\s*<iID>{sn}</iID>.*?)<iFileSize>\d+</iFileSize>(.*?)<szMD5val>[^<]+</szMD5val>",
-                      lambda m: f"{m.group(1)}<iFileSize>{len(nb)}</iFileSize>{m.group(2)}<szMD5val>{md}</szMD5val>", hist, flags=re.S)
-    st = pythoncom.StgOpenStorage(dst, None, RW)
-    s = st.CreateStream("history.xml", CREATE, 0, 0); s.Write(hist.encode("utf-8")); s = None
-    s = st.CreateStream("_hdb", CREATE, 0, 0); s.Write(new_hdb); s = None
-    st.Commit(0); st = None
-    rc, sout = W.self_check(dst)
+    hist = _history_with_stream_digests(gxw, {res_n: new_res, prg_n: new_prg})
+    output = out or (os.path.splitext(gxw)[0] + "-filled.gxw")
+    rc, sout = _write_check_publish(gxw, output, new_hdb, hist, input_sha256)
+    if rc != 0:
+        return rc
+    dst = output
     body = re.search(rf"## POU: {re.escape(pou)}.*?(?=\n## |\Z)", sout, re.S)
     print(f"  작성: {dst}  self-check rc={rc}")
     if body:
         print("  " + body.group(0).strip().replace("\n", "\n  "))
-    print("  변경 = 본체 2스트림만(레지·트리·dataprotection 불변) — GX Works2 실측 권장.")
+    print("  변경 = 본체 2스트림만(레지·트리·dataprotection 불변) - GX Works2 실측 권장.")
     return 0
 
 
@@ -792,6 +848,8 @@ def collect_operands(il_region):
 
 def _enc_frame(tc, val):
     """device 프레임 재인코딩: <f> <tc> <val:w LE> <f>, w=최소바이트(GX 관찰)."""
+    if not 0 <= val <= 0xFFFFFFFF:
+        raise ValueError(f"디바이스 주소는 현재 32비트 프레임 범위 밖: {val}")
     w = 1 if val <= 0xFF else 2 if val <= 0xFFFF else 3 if val <= 0xFFFFFF else 4
     f = 0x03 + w
     return bytes([f, tc]) + int(val).to_bytes(w, "little") + bytes([f])
@@ -823,6 +881,7 @@ def transpose_il_region(il, offsets):
 
 
 def transpose_pou(gxw, pou, offsets, apply, out):
+    input_sha256 = W.source_sha256(gxw)
     streams = W.hdb_substreams(W.read_top(gxw, "_hdb"))
     pous = pou_streams(gxw)
     if pou not in pous:
@@ -855,25 +914,19 @@ def transpose_pou(gxw, pou, offsets, apply, out):
     if not apply:
         print(f"  [dry-run] --apply로 작성.")
         return 0
-    dst = out or (os.path.splitext(gxw)[0] + "-transposed.gxw")
-    shutil.copy2(gxw, dst)
     hdb = W.read_top(gxw, "_hdb")
     new_hdb = _patch_hdb_with_temporary(hdb, new_streams, 'gxw-transpose-')
-    ole = olefile.OleFileIO(gxw); hist = ole.openstream("history.xml").read().decode("utf-8"); ole.close()
-    for sn, nb in new_streams.items():
-        md = base64.b64encode(hashlib.md5(nb).digest()).decode()
-        hist = re.sub(rf"(<D_History\b[^>]*>\s*<iID>{sn}</iID>.*?)<iFileSize>\d+</iFileSize>(.*?)<szMD5val>[^<]+</szMD5val>",
-                      lambda m: f"{m.group(1)}<iFileSize>{len(nb)}</iFileSize>{m.group(2)}<szMD5val>{md}</szMD5val>", hist, flags=re.S)
-    st = pythoncom.StgOpenStorage(dst, None, RW)
-    s = st.CreateStream("history.xml", CREATE, 0, 0); s.Write(hist.encode("utf-8")); s = None
-    s = st.CreateStream("_hdb", CREATE, 0, 0); s.Write(new_hdb); s = None
-    st.Commit(0); st = None
-    rc, sout = W.self_check(dst)
+    hist = _history_with_stream_digests(gxw, new_streams)
+    output = out or (os.path.splitext(gxw)[0] + "-transposed.gxw")
+    rc, sout = _write_check_publish(gxw, output, new_hdb, hist, input_sha256)
+    if rc != 0:
+        return rc
+    dst = output
     body = re.search(rf"## POU: {re.escape(pou)}.*?(?=\n## |\Z)", sout, re.S)
     print(f"  작성: {dst}  self-check rc={rc}")
     if body:
         print("  " + "\n  ".join(body.group(0).strip().split("\n")[:14]))
-    print("  변경 = 본체 2스트림만 — GX Works2 실측 권장.")
+    print("  변경 = 본체 2스트림만 - GX Works2 실측 권장.")
     return 0
 
 
@@ -885,7 +938,11 @@ def main():
     ap.add_argument("--apply", action="store_true"); ap.add_argument("--out")
     a = ap.parse_args()
     if a.transpose:
-        return transpose_pou(a.gxw, a.pou, parse_offsets(a.transpose), a.apply, a.out)
+        try:
+            return transpose_pou(a.gxw, a.pou, parse_offsets(a.transpose), a.apply, a.out)
+        except ValueError as error:
+            print(f"중단: {error}")
+            return 2
     if a.il:
         return fill_pou(a.gxw, a.pou, a.il, a.apply, a.out)
     ap.error("--il 또는 --transpose 필요")

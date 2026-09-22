@@ -61,6 +61,14 @@ python -m gx_re_lab.census --help
 python -m gx_re_lab.planner --help
 ```
 
+`gx3-r-inspect --summary` emits only the derived `FULL`, `PARTIAL`, or `FATAL`
+status, the R profile support decision, coverage totals, and a finding count. It
+does not emit project names, records, operands, comments, labels, archive paths,
+or other project strings. This is not a guarantee of complete anonymization;
+review output before sharing. Normal output contains the complete R analysis.
+It can be combined with `--output`: stdout remains the summary while the new
+directory receives the complete artifact.
+
 The Lab module CLIs are `explorer_diff`, `reference_query`, `census`,
 `r04_census`, `gxw_census`, `planner`, `coverage_ledger`, `external_compare`,
 `final_scope`, `lab`, `experiment`, `relation_audit`, and `campaign_coverage`.
@@ -68,6 +76,20 @@ Without an input, `gxw-inspect` and `python -m gxw_pou_devmap` display usage and
 exit with code 1. Give writing tools only disposable input copies and new output
 paths, never originals. Atomic protection against a hostile filesystem is not
 guaranteed across all input and output operations.
+
+GXW single-command `--apply` without `--all` is disabled (exit 10) until command
+boundaries and replicated stream equivalence can be verified. Dry-run is only a
+byte-change preview, not authorization to write. Explicit global replacement
+retains its existing semantics; it is not a substitute for a single-command edit.
+Writer, fill, and transpose validate a temporary candidate before publishing to
+a new output path. Existing outputs are refused. Reader failure, exception, or
+the 30-second validation timeout fails the operation without publishing it.
+Explicit `--in-place` is for disposable copies only and refuses an existing
+`.bak`; candidate validation precedes backup creation and input replacement.
+`--in-place` and `--out` cannot be combined. Input hash checks detect changes
+during preparation and before publication; they do not provide a filesystem lock.
+Numeric checks reject frame overflow while preserving valid negative two's
+complement encodings. Frame width is not a CPU device or operand support claim.
 
 ## Validation and publication boundaries
 
