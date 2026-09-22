@@ -19,4 +19,4 @@ gxw-encode = "wt9_fill_pou_body:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["gxw_ladder_reader", "gxw_ladder_writer", "gxw_pou_devmap", "gxw_reference_ir", "wt9_fill_pou_body"]
+py-modules = ["gxw_ladder_reader", "gxw_ladder_writer", "gxw_single_command", "gxw_pou_devmap", "gxw_reference_ir", "wt9_fill_pou_body"]

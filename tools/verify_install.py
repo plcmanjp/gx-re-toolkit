@@ -29,7 +29,7 @@ def verify(root: Path, commit: str, tree: str):
         if direct and json.loads(direct).get("dir_info", {}).get("editable"):
             raise ValueError("Editable install is not evidence")
     names = ["gx3_core", "gx3_fx5_profile", "gx3_fx5_parser_toolkit.ir", "gx3_r_parser_toolkit.parser",
-             "gxw_ladder_reader", "gxw_ladder_writer", "gxw_pou_devmap", "gxw_reference_ir", "wt9_fill_pou_body"]
+             "gxw_ladder_reader", "gxw_ladder_writer", "gxw_single_command", "gxw_pou_devmap", "gxw_reference_ir", "wt9_fill_pou_body"]
     names += ["gx_re_lab." + name for name in LAB]
     for name in names:
         module = importlib.import_module(name)

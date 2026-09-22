@@ -77,10 +77,21 @@ exit with code 1. Give writing tools only disposable input copies and new output
 paths, never originals. Atomic protection against a hostile filesystem is not
 guaranteed across all input and output operations.
 
-GXW single-command `--apply` without `--all` is disabled (exit 10) until command
-boundaries and replicated stream equivalence can be verified. Dry-run is only a
-byte-change preview, not authorization to write. Explicit global replacement
-retains its existing semantics; it is not a substitute for a single-command edit.
+GXW single-command `--apply` without `--all` accepts only an equal-length, complete
+03-family command with one unmodified operand frame, or a proven fixed-arity 05
+dispatch/XFER command whose `(marker, A, opcode)` exactly matches the public encoder
+allowlist. It resolves one
+XML POU `.res`/`.Program.pou` pair and consumes every payload byte under its bounded
+command, line-statement, and Note grammar. Line statements use the exact
+`<L> 80 <ceil(L/2)> <printable text (L-4)> <L>` form; Notes require that same
+length relation or the public raw subtype `01`. K/H and floating constant frames
+also have their encoder-derived width limits. An empty second `.res` payload gives a
+two-copy form; otherwise all three copies must be byte-identical. All `_hdb` OLD
+hits must be the resolved slices, and the container-wide OLD count is an additional
+fail-closed ambiguity check, not a claimed physical-sector mapping. Unsupported
+grammar, metadata-free input, divergent copies, embedded OLD bytes, malformed
+headers/trailers, or ambiguity exits 10 without a candidate. Dry-run and explicit
+global `--all` replacement retain their existing semantics.
 Writer, fill, and transpose validate a temporary candidate before publishing to
 a new output path. Existing outputs are refused. Reader failure, exception, or
 the 30-second validation timeout fails the operation without publishing it.

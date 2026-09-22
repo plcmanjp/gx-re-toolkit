@@ -73,10 +73,19 @@ Lab 모듈 CLI는 `explorer_diff`, `reference_query`, `census`, `r04_census`,
 작성 도구에는 원본 대신 폐기 가능한 복사본과 새 출력 경로만 전달한다.
 입출력 전체에 대한 원자적 hostile-filesystem 방어를 보장하지 않는다.
 
-GXW 단일명령의 `--all` 없는 `--apply`는 명령 경계와 복제 stream의 동등성을
-검증할 근거가 확보될 때까지 종료 코드 10으로 차단한다. dry-run은 byte 변경의
-탐색 미리보기이며 작성 승인이 아니다. 명시적 전역 치환은 기존 의미를 유지하며
-단일명령 편집을 대체하는 수단이 아니다.
+GXW 단일명령의 `--all` 없는 `--apply`는 길이가 같은 완전한 03 계열의 비수식자
+피연산자 frame 명령 또는 공개 encoder allowlist의 `(marker, A, opcode)`와 정확히
+일치하는 고정-arity 05 dispatch/XFER 명령만 허용한다. XML의 한 POU
+`.res`/`.Program.pou` 역할을 해석하고 bounded 명령, line statement, Note grammar로
+payload의 모든 바이트를 소비한다. line statement는 정확한
+`<L> 80 <ceil(L/2)> <printable text (L-4)> <L>` 형식이며 Note는 같은 길이 관계 또는
+공개 raw subtype `01`만 허용한다. K/H와 부동소수 constant frame도 encoder 근거 폭으로
+제한한다. 둘째 `.res` payload가 비어 있으면 2개 복제본,
+비어 있지 않으면 3개가 완전히 같아야 한다. `_hdb`의 모든 OLD hit는 해석된 slice여야
+하며 container 전체 OLD count도 추가 fail-closed 모호성 검사에 사용한다. 이는 물리
+sector offset 매핑을 주장하는 검사는 아니다. 미지원 grammar, metadata 없는 입력,
+복제본 불일치, embedded OLD, 헤더/trailer 이상 또는 모호성은 후보를 만들지 않고
+종료 코드 10으로 거부한다. dry-run과 명시적 전역 `--all` 교체는 기존 계약을 유지한다.
 writer, fill, transpose는 임시 후보를 검증한 뒤 새 출력 경로에 발행한다.
 기존 출력은 거부하며 reader 실패, 예외 또는 30초 검증 timeout이면 발행하지 않는다.
 명시적 `--in-place`는 폐기 가능한 사본 전용이고 기존 `.bak`가 있으면 거부한다.

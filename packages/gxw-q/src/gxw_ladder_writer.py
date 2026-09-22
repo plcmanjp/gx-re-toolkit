@@ -225,8 +225,10 @@ def do_replace(src, OLD, NEW, apply, in_place, out, allow_multi, allow_collision
         print("  중단: --in-place와 --out은 함께 사용할 수 없음. 파일을 읽거나 쓰지 않음.")
         return 8
     if apply and not allow_multi:
-        print("  중단: 단일명령 --apply는 복제 stream 대응과 명령 경계 근거가 없어 임시 비활성화됨. 파일을 읽거나 쓰지 않음.")
-        return 10
+        # The strict path owns single-command publication.  The explicit --all
+        # path below deliberately retains its established global semantics.
+        import gxw_single_command
+        return gxw_single_command.apply(src, OLD, NEW, in_place, out, allow_collision)
     input_sha256 = source_sha256(src)
     hdb = read_top(str(src), "_hdb")
     subs = hdb_substreams(hdb)
