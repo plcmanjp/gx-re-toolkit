@@ -20,5 +20,9 @@ fall back across profiles. The FX5 finding
 `SOURCE_GLOBAL_ORDER_NOT_SERIALIZED` is not allowed for R.
 
 GXW reading uses `olefile`; Windows file writing/encoding uses `pywin32`.
+GXW reference IR recognizes direct `K1`..`K8` grouped bit-device operands and
+lists their `4n` bit addresses. Indexed/indirect operands and grouped block
+spans remain unresolved. This research projection does not approve a target
+CPU address range or product conversion.
 Using the Windows storage API does not authorize GX GUI execution or PLC access.
 Some original CLIs return usage code 1 rather than success code 0 for help.

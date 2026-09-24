@@ -69,14 +69,14 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
     }
     if raw_token.startswith('"') and raw_token.endswith('"'):
         return {**base, "kind": "literal", "status": "decoded"}
-    constant = CONSTANT.fullmatch(raw_token)
-    if constant:
-        radix = 16 if constant.group("kind") == "H" else 10
-        value = _parse_int(constant.group("value"), radix)
-        return {**base, "kind": "constant", "status": "decoded" if value is not None else "unknown",
-                "constant": {"notation": constant.group("kind"), "value": value}}
     match = DEVICE.fullmatch(raw_token)
     if not match:
+        constant = CONSTANT.fullmatch(raw_token)
+        if constant:
+            radix = 16 if constant.group("kind") == "H" else 10
+            value = _parse_int(constant.group("value"), radix)
+            return {**base, "kind": "constant", "status": "decoded" if value is not None else "unknown",
+                    "constant": {"notation": constant.group("kind"), "value": value}}
         return base
     family = match.group("family")
     radix = 16 if family in HEX_FAMILIES else 10
@@ -144,6 +144,20 @@ def _coverage(operand: dict[str, Any], opcode: str, operands: list[dict[str, Any
                 "reason": "INDEX_OR_INDIRECT_ADDRESS"}
     if state != "STATIC" or width is None:
         return {"state": state, "word_width": width, "addresses": None, "reason": reason}
+    digit_width = device["digit_width"]
+    if digit_width is not None:
+        if device["family"] not in BIT_FAMILIES or device["word_bit"] is not None:
+            return {"state": "UNKNOWN", "word_width": width, "addresses": None,
+                    "reason": "DIGIT_DEVICE_FORM_UNVERIFIED"}
+        if opcode in {"BMOV", "BMOVP", "FMOV", "FMOVP"}:
+            return {"state": "UNKNOWN", "word_width": width, "addresses": None,
+                    "reason": "DIGIT_BLOCK_SPAN_UNVERIFIED"}
+        count = 4 * digit_width
+        addresses = [{"family": device["family"], "address": device["address"] + offset,
+                      "module": device["module"], "word_bit": device["word_bit"], "offset": offset}
+                     for offset in range(count)]
+        return {"state": "STATIC", "word_width": width, "addresses": addresses,
+                "reason": "DIGIT_BIT_WIDTH"}
     if width > MAX_COVERED_ADDRESSES:
         return {"state": "LIMIT_REACHED", "word_width": width, "addresses": None,
                 "reason": "COVERED_ADDRESS_LIMIT"}
