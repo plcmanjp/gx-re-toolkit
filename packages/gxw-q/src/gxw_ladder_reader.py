@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 '\ngxw_ladder_reader.py - GX Works2 .gxw 래더(POU) → 사람이 읽는 IL 텍스트 덤프\n\nCSV export 대체 PoC 리더. `_hdb/12`(POU 본체, 비암호화 바이너리 토큰)를 직접 디코드한다.\n암호 해독 불필요 - 평문 토큰 파싱.\n\n요소 문법(관찰):\n  03 TT 03 04 DD AA          단순 IL 요소: 명령 TT, 디바이스 코드 DD, 주소 AA\n  0e ee <텍스트> 0e 04 a8 PP  라인 스테이트먼트(rung 주석), PP=위치(줄마다 +0x14)\n  05 00 00 00 <UTF-16LE>      POU 이름\n  04 34 02 04 …               섹션 구분자\n\nopcode/디바이스 사전은 1차(샘플 차분 기반). 미확인 토큰은 raw로 표기.\n완전화: T/C/D/응용명령 다중접점(AND/OR) 샘플로 사전 확장(README §5).\n\n사용:\n  python gxw_ladder_reader.py <project.gxw>               # 텍스트: 전 POU IL + 디바이스 코멘트\n  python gxw_ladder_reader.py <project.gxw> --csv <dir>   # GX Works2 IL CSV: POU별 <dir>/<POU>.csv + COMMENT.csv\n  python gxw_ladder_reader.py <project.gxw> --csv         # (dir 없으면) MAIN을 stdout으로\nGX CSV는 원본 포맷(UTF-16 탭 전필드인용 프리앰블 연속행 END)을 재현 - Step No.는 GX가 import 시 재계산.\n'
-import sys, os, re, io, struct
+import sys, os, re, io, struct, tempfile
+from pathlib import Path
 import olefile
 
 # Source-derived parser observation.
@@ -1288,17 +1289,61 @@ def gx_csv_for_pou(name, rows, proj, plc, typed_notes=None):
     return "\r\n".join(out) + "\r\n"
 
 
+def _csv_leaf_names(pous):
+    """Validate all Windows CSV leaf names before creating an output directory."""
+    names = {"comment.csv"}
+    leaves = []
+    reserved = {"CON", "PRN", "AUX", "NUL"} | {f"{prefix}{index}" for prefix in ("COM", "LPT") for index in range(1, 10)}
+    for name in sorted(pous):
+        if (not isinstance(name, str) or not name or name in {".", ".."}
+                or name.endswith((" ", ".")) or any(ord(char) < 32 or char in '\\/:*?"<>|' for char in name)
+                or name.split(".", 1)[0].upper() in reserved):
+            raise ValueError(f"Unsafe POU CSV name: {name!r}")
+        leaf = f"{name}.csv"
+        folded = leaf.casefold()
+        if folded in names:
+            raise ValueError(f"Colliding POU CSV name: {leaf!r}")
+        names.add(folded)
+        leaves.append((name, leaf))
+    return leaves
+
+
+def _publish_csv_directory(outdir, staged):
+    """Publish a complete sibling directory without touching an existing target."""
+    if outdir.exists() or outdir.is_symlink():
+        raise FileExistsError(f"CSV output directory must be new: {outdir}")
+    if os.name == "nt":
+        # Windows rename refuses an existing destination directory.
+        os.rename(staged, outdir)
+    elif sys.platform.startswith("linux"):
+        # POSIX rename can replace a concurrently created empty directory.
+        import ctypes
+        import errno
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOSYS, "No-replace directory rename is unavailable")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        if renameat2(-100, os.fsencode(staged), -100, os.fsencode(outdir), 1) != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), outdir)
+    else:
+        raise OSError("No-replace directory rename is unsupported on this platform")
+
+
 def output_csv(arg, pous, cmap):
-    """GX Works2 IL CSV 출력. 인자 2개째가 출력 디렉토리면 POU별 파일 + COMMENT.csv, 없으면 stdout(MAIN)."""
+    """GX Works2 IL CSV 출력. 디렉터리 출력은 새 경로에만 발행하고 없으면 stdout(MAIN)."""
     proj, plc = project_info(arg)
     rest = [a for a in sys.argv[1:] if not a.startswith("-")]
     outdir = rest[1] if len(rest) > 1 else None
     if outdir:
-        os.makedirs(outdir, exist_ok=True)
-        for nm in sorted(pous):
-            rows, _, _ = pou_rows(pous[nm][1], cmap)
-            with open(os.path.join(outdir, f"{nm}.csv"), "w", encoding="utf-16", newline="") as f:
-                f.write(gx_csv_for_pou(nm, rows, proj, plc, typed_note_records(pous[nm][1], cmap)))
+        target = Path(outdir)
+        if not target.name or target.exists() or target.is_symlink():
+            raise FileExistsError(f"CSV output directory must be new: {outdir}")
+        if not target.parent.is_dir():
+            raise FileNotFoundError(f"CSV output parent directory is absent: {target.parent}")
+        pou_leaves = _csv_leaf_names(pous)
         # Source-derived parser observation.
         order = {"X": 0, "Y": 1, "M": 2, "L": 3, "F": 4, "B": 5, "T": 6, "C": 7, "D": 8}
 
@@ -1308,10 +1353,18 @@ def output_csv(arg, pous, cmap):
                 return (99, 0)
             typ, num = m.group(1), m.group(2)
             return (order.get(typ, 50), int(num, 16 if typ in ("X", "Y", "B", "W") else 10))
-        with open(os.path.join(outdir, "COMMENT.csv"), "w", encoding="utf-16", newline="") as f:
-            lines = [_gx_row(proj), _gx_row("Device Name", "Comment")]
-            lines += [_gx_row(d, c) for d, c in sorted(cmap.items(), key=lambda kv: _dkey(kv[0]))]
-            f.write("\r\n".join(lines) + "\r\n")
+        with tempfile.TemporaryDirectory(prefix=".gxw-csv-", dir=target.parent) as temporary:
+            staged = Path(temporary) / "candidate"
+            staged.mkdir()
+            for nm, leaf in pou_leaves:
+                rows, _, _ = pou_rows(pous[nm][1], cmap)
+                with open(staged / leaf, "w", encoding="utf-16", newline="") as f:
+                    f.write(gx_csv_for_pou(nm, rows, proj, plc, typed_note_records(pous[nm][1], cmap)))
+            with open(staged / "COMMENT.csv", "w", encoding="utf-16", newline="") as f:
+                lines = [_gx_row(proj), _gx_row("Device Name", "Comment")]
+                lines += [_gx_row(d, c) for d, c in sorted(cmap.items(), key=lambda kv: _dkey(kv[0]))]
+                f.write("\r\n".join(lines) + "\r\n")
+            _publish_csv_directory(target, staged)
         print(f"GX CSV 출력: {outdir}/  (POU {len(pous)}개 + COMMENT.csv)")
     else:
         nm = "MAIN" if "MAIN" in pous else sorted(pous)[0]
