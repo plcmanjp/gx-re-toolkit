@@ -220,7 +220,9 @@ def scan(hdb, subs, OLD):
 
 
 def do_replace(src, OLD, NEW, apply, in_place, out, allow_multi, allow_collision):
-    assert OLD, "OLD 빈 패턴"
+    if not OLD:
+        print("  중단: OLD 빈 패턴. 파일을 읽거나 쓰지 않음.")
+        return 7
     if in_place and out is not None:
         print("  중단: --in-place와 --out은 함께 사용할 수 없음. 파일을 읽거나 쓰지 않음.")
         return 8

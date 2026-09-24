@@ -73,6 +73,17 @@ Lab 모듈 CLI는 `explorer_diff`, `reference_query`, `census`, `r04_census`,
 작성 도구에는 원본 대신 폐기 가능한 복사본과 새 출력 경로만 전달한다.
 입출력 전체에 대한 원자적 hostile-filesystem 방어를 보장하지 않는다.
 
+`gxw-inspect project.gxw --csv 새-디렉터리`는 부모 디렉터리가 있어야 하며,
+출력 디렉터리는 존재하지 않아야 한다. 모든 POU CSV 이름을 검사하고 POU 및
+`COMMENT.csv`를 같은 부모의 임시 디렉터리에 렌더링한 뒤 완성된 후보를 새 경로로
+이동한다. 렌더링 또는 이동 실패 시 최종 경로는 생성되지 않는다. 기존 출력 디렉터리를
+쓰기용으로 열지 않는다.
+디렉터리 없이 `--csv`를 사용하면 선택한 POU를 계속 stdout에 출력한다.
+디렉터리 발행은 Windows의 기존 대상 거부 rename 또는 Linux의
+`RENAME_NOREPLACE` 지원 `renameat2`가 필요하며, 다른 플랫폼에서는 거부한다.
+`gxw-write --replace`는 Python 최적화 여부와 무관하게 빈 OLD 패턴을 프로젝트
+본문을 읽기 전에 거부한다.
+
 GXW 단일명령의 `--all` 없는 `--apply`는 길이가 같은 완전한 03 계열의 비수식자
 피연산자 frame 명령 또는 공개 encoder allowlist의 `(marker, A, opcode)`와 정확히
 일치하는 고정-arity 05 dispatch/XFER 명령만 허용한다. XML의 한 POU

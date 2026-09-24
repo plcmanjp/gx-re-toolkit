@@ -77,6 +77,17 @@ exit with code 1. Give writing tools only disposable input copies and new output
 paths, never originals. Atomic protection against a hostile filesystem is not
 guaranteed across all input and output operations.
 
+`gxw-inspect project.gxw --csv new-directory` requires an existing parent and
+an output directory that does not exist. It validates every POU CSV name,
+renders POU and `COMMENT.csv` files in a temporary sibling directory, then
+renames the complete candidate to the new destination. A failed render or
+rename leaves the final path absent. An existing destination is never opened
+for writing. Using `--csv` without a directory still writes the selected POU
+to stdout. Directory publication requires Windows no-replace rename or Linux
+`renameat2` with `RENAME_NOREPLACE`; other platforms fail closed.
+`gxw-write --replace` rejects an empty OLD pattern before reading project data,
+including when Python assertions are optimized away.
+
 GXW single-command `--apply` without `--all` accepts only an equal-length, complete
 03-family command with one unmodified operand frame, or a proven fixed-arity 05
 dispatch/XFER command whose `(marker, A, opcode)` exactly matches the public encoder
