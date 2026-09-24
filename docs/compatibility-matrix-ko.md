@@ -20,5 +20,8 @@ FX5와 R schema는 버전과 embedded identifier가 같더라도 서로 다른 r
 FX5의 `SOURCE_GLOBAL_ORDER_NOT_SERIALIZED` finding을 R에 허용하지 않는다.
 
 GXW 판독은 `olefile`, Windows 파일 writer/encoder는 `pywin32`를 사용한다.
+GXW reference IR은 직접 `K1`~`K8` 묶음 비트 디바이스를 식별하고 `4n`개 비트 주소를 열거한다.
+인덱스/간접 operand와 묶음 블록 범위는 미확정으로 남긴다. 이 연구용 projection은 대상
+CPU 주소 범위나 제품 변환을 승인하지 않는다.
 Windows storage API 사용은 GX GUI 또는 PLC 접속 권한을 뜻하지 않는다.
 일부 원래 CLI의 도움말은 성공 코드 0이 아닌 사용법 코드 1을 반환할 수 있다.
