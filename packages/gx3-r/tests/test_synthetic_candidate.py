@@ -35,7 +35,6 @@ class SummarySyntheticTests(unittest.TestCase):
             "gx3-r-inspect.exe" if sys.platform == "win32" else "gx3-r-inspect"
         )
         self.assertTrue(command.is_file(), "installed gx3-r-inspect entry point is required")
-        self.assertEqual(Path(sys.executable).resolve().parent, command.resolve().parent)
         roots = [Path(value).resolve() for value in site.getsitepackages()]
         self.assertTrue(
             any(Path(gx3_r_parser_toolkit.__file__).resolve().is_relative_to(root) for root in roots),

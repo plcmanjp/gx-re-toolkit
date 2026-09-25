@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 '\ngxw_ladder_reader.py - GX Works2 .gxw 래더(POU) → 사람이 읽는 IL 텍스트 덤프\n\nCSV export 대체 PoC 리더. `_hdb/12`(POU 본체, 비암호화 바이너리 토큰)를 직접 디코드한다.\n암호 해독 불필요 - 평문 토큰 파싱.\n\n요소 문법(관찰):\n  03 TT 03 04 DD AA          단순 IL 요소: 명령 TT, 디바이스 코드 DD, 주소 AA\n  0e ee <텍스트> 0e 04 a8 PP  라인 스테이트먼트(rung 주석), PP=위치(줄마다 +0x14)\n  05 00 00 00 <UTF-16LE>      POU 이름\n  04 34 02 04 …               섹션 구분자\n\nopcode/디바이스 사전은 1차(샘플 차분 기반). 미확인 토큰은 raw로 표기.\n완전화: T/C/D/응용명령 다중접점(AND/OR) 샘플로 사전 확장(README §5).\n\n사용:\n  python gxw_ladder_reader.py <project.gxw>               # 텍스트: 전 POU IL + 디바이스 코멘트\n  python gxw_ladder_reader.py <project.gxw> --csv <dir>   # GX Works2 IL CSV: POU별 <dir>/<POU>.csv + COMMENT.csv\n  python gxw_ladder_reader.py <project.gxw> --csv         # (dir 없으면) MAIN을 stdout으로\nGX CSV는 원본 포맷(UTF-16 탭 전필드인용 프리앰블 연속행 END)을 재현 - Step No.는 GX가 import 시 재계산.\n'
-import sys, os, re, io, struct, tempfile
+import sys, os, re, struct, tempfile
 from pathlib import Path
-import olefile
+import gxw_bounded_ole as bounded_ole
 
 # Source-derived parser observation.
 INSTR = {
@@ -141,23 +141,45 @@ def load_all_substreams(arg):
     if os.path.isdir(arg):
         sd = os.path.join(arg, "_hdb_sub")
         if os.path.isdir(sd):
-            for f in os.listdir(sd):
-                with open(os.path.join(sd, f), "rb") as handle:
-                    out[f.split("__")[-1]] = handle.read()
+            names = os.listdir(sd)
+            if len(names) > bounded_ole.MAX_STREAMS:
+                raise ValueError("extracted stream count exceeds the budget")
+            total = 0
+            for f in names:
+                path = os.path.join(sd, f)
+                if os.path.islink(path) or not os.path.isfile(path):
+                    raise ValueError("extracted stream must be a regular file")
+                size = os.path.getsize(path)
+                total += size
+                if size > bounded_ole.MAX_STREAM_BYTES or total > bounded_ole.MAX_TOTAL_BYTES:
+                    raise ValueError("extracted stream byte budget exceeded")
+                with open(path, "rb") as handle:
+                    body = handle.read(size + 1)
+                if len(body) != size:
+                    raise ValueError("extracted stream size changed during read")
+                out[f.split("__")[-1]] = body
         return out
     with open(arg, "rb") as handle:
         head = handle.read(8)
     if head == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":  # OLE = .gxw
-        ole = olefile.OleFileIO(arg)
-        hdb = ole.openstream("_hdb").read(); ole.close()
-        sub = olefile.OleFileIO(io.BytesIO(hdb))
-        for e in sub.listdir(streams=True):
-            out["/".join(e)] = sub.openstream(e).read()
-        sub.close()
-        return out
+        ole = bounded_ole.open_file(arg)
+        try:
+            hdb = bounded_ole.stream(ole, "_hdb")
+        finally:
+            ole.close()
+        sub = bounded_ole.open_nested(hdb)
+        try:
+            return bounded_ole.all_streams(sub)
+        finally:
+            sub.close()
     # 단일 _hdb__NN 파일
     with open(arg, "rb") as handle:
-        out["12"] = handle.read()
+        size = os.path.getsize(arg)
+        if size > bounded_ole.MAX_STREAM_BYTES:
+            raise ValueError("single stream exceeds the byte budget")
+        out["12"] = handle.read(size + 1)
+        if len(out["12"]) != size:
+            raise ValueError("single stream size changed during read")
     return out
 
 
@@ -1191,34 +1213,41 @@ def project_info(arg):
     """프로젝트명 + PLC Information(프리앰블용, best-effort)."""
     name, plc = os.path.splitext(os.path.basename(arg))[0], "QCPU (Q mode)"
     try:
-        if os.path.isfile(arg) and open(arg, "rb").read(8) == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
-            ole = olefile.OleFileIO(arg)
-            if ole.exists("projectlist.xml"):
-                m = re.search(r"<szName>([^<]+)</szName>",
-                              ole.openstream("projectlist.xml").read().decode("utf-8", "ignore"))
-                if m:
-                    name = m.group(1)
-            if ole.exists("_hdb"):                  # PLC 모드/모델: _hdb 서브스트림에서
-                sub = olefile.OleFileIO(io.BytesIO(ole.openstream("_hdb").read()))
-                mode = model = None
-                for e in sub.listdir(streams=True):
-                    t = sub.openstream(e).read().decode("utf-16le", "ignore")
-                    if not mode:
-                        mm = re.search(r"[A-Z]CPU \([^)]+\)", t)
-                        if mm:
-                            mode = mm.group(0)
-                    if not model:
-                        mm = re.search(r"Q\d{2}[A-Z]{2,4}", t)
-                        if mm and ("UD" in mm.group(0) or "UV" in mm.group(0)):
-                            model = mm.group(0)
+        with open(arg, "rb") as probe:
+            is_ole = probe.read(8) == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        if os.path.isfile(arg) and is_ole:
+            ole = bounded_ole.open_file(arg)
+            try:
+                if ole.exists("projectlist.xml"):
+                    m = re.search(r"<szName>([^<]+)</szName>",
+                                  bounded_ole.stream(ole, "projectlist.xml").decode("utf-8", "ignore"))
+                    if m:
+                        name = m.group(1)
+                if ole.exists("_hdb"):                  # PLC 모드/모델: _hdb 서브스트림에서
+                    sub = bounded_ole.open_nested(bounded_ole.stream(ole, "_hdb"))
+                    try:
+                        bodies = bounded_ole.all_streams(sub).values()
+                        mode = model = None
+                        for body in bodies:
+                            t = body.decode("utf-16le", "ignore")
+                            if not mode:
+                                mm = re.search(r"[A-Z]CPU \([^)]+\)", t)
+                                if mm:
+                                    mode = mm.group(0)
+                            if not model:
+                                mm = re.search(r"Q\d{2}[A-Z]{2,4}", t)
+                                if mm and ("UD" in mm.group(0) or "UV" in mm.group(0)):
+                                    model = mm.group(0)
+                            if mode and model:
+                                break
+                    finally:
+                        sub.close()
                     if mode and model:
-                        break
-                sub.close()
-                if mode and model:
-                    plc = f"{mode} {model}"
-                elif mode:
-                    plc = mode
-            ole.close()
+                        plc = f"{mode} {model}"
+                    elif mode:
+                        plc = mode
+            finally:
+                ole.close()
     except Exception:
         pass
     return name, plc

@@ -13,9 +13,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-import olefile
-
 import gxw_ladder_writer as W
+import gxw_bounded_ole as bounded_ole
+from gxw_bounded_xml import parse_xml
 from gxw_ladder_reader import DEVICE, DISPATCH_05, INSTR, INSTR_NOOP, XFER_B
 from wt9_fill_pou_body import PREFIX_05
 
@@ -66,12 +66,12 @@ def _only_child_text(element: ET.Element, name: str) -> str:
 def pou_roles(path: str | Path) -> dict[str, dict[str, str]]:
     """Resolve exact POU .res/.Program.pou XML roles without regex fallback."""
     try:
-        ole = olefile.OleFileIO(str(path))
+        ole = bounded_ole.open_file(path)
         try:
-            raw = ole.openstream("projectdatalist.xml").read()
+            raw = bounded_ole.stream(ole, "projectdatalist.xml", limit=1024 * 1024)
         finally:
             ole.close()
-        root = ET.fromstring(raw)
+        root = parse_xml(raw)
     except Exception as error:
         raise Rejected(f"projectdatalist.xml unavailable or malformed: {error}") from error
     roles: dict[str, dict[str, str]] = {}
@@ -321,9 +321,9 @@ def _replace_at(data: bytes, offset: int, old: bytes, new: bytes) -> bytes:
 
 
 def _top_streams(path: Path) -> dict[str, bytes]:
-    ole = olefile.OleFileIO(str(path))
+    ole = bounded_ole.open_file(path)
     try:
-        return {"/".join(item): ole.openstream(item).read() for item in ole.listdir(streams=True)}
+        return bounded_ole.all_streams(ole)
     finally:
         ole.close()
 

@@ -4,7 +4,7 @@ from collections import Counter
 import hashlib
 import re
 from typing import Any
-import xml.etree.ElementTree as ET
+from .xml import parse_xml
 
 from . import TOOL_VERSION
 from .archive import ArchiveError, SafeGx3Archive, sha256_file, sqlite_connection
@@ -72,13 +72,13 @@ def _detect_profile(archive: SafeGx3Archive) -> tuple[dict[str, Any], list[dict[
     if len(evidence) != 2 or archive.entries[evidence[0]] != archive.entries[evidence[1]]:
         return {"profile_id": "mitsubishi.gx3.r04cpu.ladder", "decision": "AMBIGUOUS", "evidence": evidence}, [_finding("MINING_REQUIRED", "profile", "Config.xml", "dual Config evidence is missing or differs")]
     try:
-        root = ET.fromstring(archive.entries["Config.xml"].decode("utf-8-sig"))
-        config = root.find(".//Config")
+        root = parse_xml(archive.entries["Config.xml"])
+        config = root if root.tag == "Config" else root.find(".//Config")
         if config is None:
             unit, unit_id = None, None
         else:
             unit, unit_id = config.attrib.get("Unit"), config.attrib.get("UnitId")
-    except (UnicodeDecodeError, ET.ParseError, AttributeError):
+    except (ValueError, AttributeError):
         unit, unit_id = None, None
     if (unit, str(unit_id)) == ("R04", "4097"):
         decision, reason = "SUPPORTED", None
@@ -371,6 +371,19 @@ def _envelope(archive: SafeGx3Archive, profile: dict[str, Any], raw_pous: list[d
 
 
 def validate_ir(value: dict[str, Any]) -> None:
+    producer = value.get("producer") if isinstance(value, dict) else None
+    profile = value.get("profile") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(producer, dict)
+        or not isinstance(profile, dict)
+        or value.get("schema_name") != "plcman.gx3.neutral-ir"
+        or value.get("schema_version") != "1.0.0"
+        or producer.get("package") != "gx3-r-parser-toolkit"
+        or profile.get("profile_id") != "mitsubishi.gx3.r04cpu.ladder"
+        or profile.get("family") != "RCPU"
+    ):
+        raise ValueError("R Neutral IR package/profile identity mismatch")
     try:
         validate_against_schema(value)
     except SchemaValidationError as error:

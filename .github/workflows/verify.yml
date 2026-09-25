@@ -9,11 +9,11 @@ jobs:
       matrix:
         python: ['3.12', '3.13']
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
       - name: Build and verify normal installation
@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m venv "$env:RUNNER_TEMP/gx-env"
           $python = "$env:RUNNER_TEMP/gx-env/Scripts/python.exe"
-          & $python -m pip install build==1.3.0 setuptools==84.0.0 olefile==0.47 pywin32==312
+          & $python -m pip install --require-hashes -r requirements-build.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python tools/build_artifacts.py --output "$env:RUNNER_TEMP/gx-build"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -39,3 +39,31 @@ jobs:
           foreach ($archive in $archives) { $arguments += '--artifact'; $arguments += $archive.FullName }
           & $python tools/audit_public_tree.py @arguments
           exit $LASTEXITCODE
+  installed-linux-read-only:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build and verify installed FX5/R read-only packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/gx-env"
+          python="$RUNNER_TEMP/gx-env/bin/python"
+          "$python" -m pip install --require-hashes -r requirements-build.txt
+          "$python" tools/build_artifacts.py --output "$RUNNER_TEMP/gx-build"
+          "$python" -m pip install --no-deps "$RUNNER_TEMP"/gx-build/artifacts/packages/gx3-fx5/*.whl "$RUNNER_TEMP"/gx-build/artifacts/packages/gx3-r/*.whl
+          "$python" -m pip check
+          "$python" tools/verify_install.py --profiles fx5-r --commit "$(git rev-parse HEAD)" --tree "$(git rev-parse 'HEAD^{tree}')" --output "$RUNNER_TEMP/install-report.json"
+          mapfile -d '' artifacts < <(find "$RUNNER_TEMP/gx-build/artifacts" -type f -print0)
+          arguments=()
+          for artifact in "${artifacts[@]}"; do arguments+=(--artifact "$artifact"); done
+          "$python" tools/audit_public_tree.py "${arguments[@]}"
