@@ -60,7 +60,7 @@ jobs:
           python="$RUNNER_TEMP/gx-env/bin/python"
           "$python" -m pip install --require-hashes -r requirements-build.txt
           "$python" tools/build_artifacts.py --output "$RUNNER_TEMP/gx-build"
-          "$python" -m pip install --no-deps "$RUNNER_TEMP"/gx-build/artifacts/gx3-fx5/*.whl "$RUNNER_TEMP"/gx-build/artifacts/gx3-r/*.whl
+          "$python" -m pip install --no-deps "$RUNNER_TEMP"/gx-build/artifacts/packages/gx3-fx5/*.whl "$RUNNER_TEMP"/gx-build/artifacts/packages/gx3-r/*.whl
           "$python" -m pip check
           "$python" tools/verify_install.py --profiles fx5-r --commit "$(git rev-parse HEAD)" --tree "$(git rev-parse 'HEAD^{tree}')" --output "$RUNNER_TEMP/install-report.json"
           mapfile -d '' artifacts < <(find "$RUNNER_TEMP/gx-build/artifacts" -type f -print0)
