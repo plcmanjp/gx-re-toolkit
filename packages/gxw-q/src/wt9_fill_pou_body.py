@@ -5,8 +5,10 @@ import sys, io, os, re, struct, shutil, hashlib, base64, argparse, tempfile, sub
 from pathlib import Path
 
 import gxw_ladder_writer as W
+import gxw_bounded_ole as bounded_ole
+from gxw_bounded_xml import parse_xml
 from gxw_ladder_reader import INSTR, INSTR_NOOP, EDGE04
-import olefile, pythoncom
+import pythoncom
 from win32com import storagecon
 
 RW = storagecon.STGM_READWRITE | storagecon.STGM_SHARE_EXCLUSIVE
@@ -673,10 +675,19 @@ def encode_il_body(il):
     return toks
 
 
+def _read_xml_stream(gxw_path, name):
+    ole = bounded_ole.open_file(gxw_path)
+    try:
+        raw = bounded_ole.stream(ole, name, limit=1024 * 1024)
+    finally:
+        ole.close()
+    parse_xml(raw)
+    return raw.decode("utf-8-sig")
+
+
 def pou_streams(gxw_path):
     """projectdatalist.xml에서 {POU: {'res':num,'prg':num}} (iID=_hdb 스트림번호)."""
-    ole = olefile.OleFileIO(gxw_path)
-    pdl = ole.openstream("projectdatalist.xml").read().decode("utf-8"); ole.close()
+    pdl = _read_xml_stream(gxw_path, "projectdatalist.xml")
     out = {}
     for m in re.finditer(r"<D_Projectdata\b.*?</D_Projectdata>", pdl, re.S):
         r = m.group(0)
@@ -696,11 +707,7 @@ def _patch_hdb_with_temporary(hdb, replacements, prefix):
 
 
 def _history_with_stream_digests(gxw, replacements):
-    ole = olefile.OleFileIO(gxw)
-    try:
-        history = ole.openstream("history.xml").read().decode("utf-8")
-    finally:
-        ole.close()
+    history = _read_xml_stream(gxw, "history.xml")
     for stream_name, payload in replacements.items():
         digest = base64.b64encode(hashlib.md5(payload).digest()).decode()
         history = re.sub(

@@ -26,3 +26,18 @@ resources; the runtime does not search parent Git repositories.
 Repeated builds in the same environment compare both original artifact hashes
 and archive-member hashes. Do not claim bit-identical results when metadata such
 as compression timestamps differs.
+
+The CI build environment uses `requirements-build.txt` with exact versions and
+hashes, including transitive tools and platform markers. This is separate from
+product runtime dependencies in package metadata. Windows checks the complete
+installed toolchain on Python 3.12/3.13. Linux checks installed FX5/R read-only
+packages and CLIs on the same versions; Windows COM writing is not tested there.
+The Python Action pins use Node 24 and require a compatible hosted runner.
+
+Metadata XML is limited to 1 MiB, 10,000 nodes and depth 64; DTD and entity
+declarations are rejected. GXW OLE inputs are limited to 512 MiB per outer
+container, 10,000 streams, 256 MiB per stream and 512 MiB in declared aggregate
+stream bytes. Every stream read checks actual against declared length. A limit
+failure is a rejected input, not partial acceptance. See
+[contract evolution](contract-evolution.md) for future schema and attestation
+decisions.

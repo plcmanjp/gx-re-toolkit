@@ -21,3 +21,17 @@
 만든다. parser 출처는 빌드된 resource에만 고정하며 runtime에서 상위 Git을 찾지 않는다.
 같은 환경의 반복 빌드는 원본 artifact hash와 archive member hash를 모두 비교한다.
 압축 timestamp 등 metadata 차이가 있으면 bit-identical이라고 보고하지 않는다.
+
+CI 빌드 환경은 전이 도구와 플랫폼 조건을 포함하여 버전과 해시를 고정한
+`requirements-build.txt`를 사용한다. 제품 런타임 의존성은 패키지 메타데이터에
+별도로 선언한다. Windows는 Python 3.12/3.13에서 설치된 전체 도구를,
+Linux는 같은 버전에서 설치된 FX5/R 읽기 전용 패키지와 CLI를 검증한다.
+Linux에서 Windows COM 쓰기는 검증하지 않는다. Python Action 고정 버전은
+Node 24를 사용하므로 호환되는 호스팅 실행기가 필요하다.
+
+메타데이터 XML은 1 MiB, 노드 10,000개, 깊이 64로 제한하고 DTD 및 entity
+선언을 거부한다. GXW OLE은 외부 컨테이너 512 MiB, 스트림 10,000개,
+스트림당 256 MiB, 선언된 전체 스트림 512 MiB로 제한한다. 실제 읽은 길이가
+선언 길이와 같은지도 확인한다. 제한 초과는 입력 거부이며 부분 수락이
+아니다. 향후 스키마와 증명 결정은 [계약 진화](contract-evolution-ko.md)를
+참고한다.

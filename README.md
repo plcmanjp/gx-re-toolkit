@@ -30,7 +30,7 @@ must be a new path outside the checkout. The following example uses PowerShell.
 
 ```powershell
 python -m venv C:\Temp\gx-build-env
-C:\Temp\gx-build-env\Scripts\python.exe -m pip install build==1.3.0 setuptools==84.0.0
+C:\Temp\gx-build-env\Scripts\python.exe -m pip install --require-hashes -r requirements-build.txt
 C:\Temp\gx-build-env\Scripts\python.exe tools/build_artifacts.py --output C:\Temp\gx-build-01
 $wheels = Get-ChildItem C:\Temp\gx-build-01\artifacts -Recurse -Filter *.whl
 C:\Temp\gx-build-env\Scripts\python.exe -m pip install $wheels.FullName

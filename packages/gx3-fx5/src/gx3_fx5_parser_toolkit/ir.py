@@ -224,6 +224,19 @@ def build_neutral_ir(source: Path) -> dict[str, Any]:
 
 
 def validate_ir(value: dict[str, Any]) -> None:
+    producer = value.get("producer") if isinstance(value, dict) else None
+    profile = value.get("profile") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(producer, dict)
+        or not isinstance(profile, dict)
+        or value.get("schema_name") != "plcman.gx3.neutral-ir"
+        or value.get("schema_version") != "1.0.0"
+        or producer.get("package") != PACKAGE
+        or profile.get("profile_id") != "mitsubishi.gx3.fx5u.ladder"
+        or profile.get("family") != "FX5"
+    ):
+        raise ValueError("FX5 Neutral IR package/profile identity mismatch")
     for kind, counts in value["coverage"].items():
         if counts["total"] != counts["decoded"] + counts["partial"] + counts["unknown"]:
             raise ValueError(f"coverage conservation failed: {kind}")

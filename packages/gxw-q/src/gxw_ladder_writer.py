@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 'Source-derived parser observation.'
-import sys, os, io, shutil, argparse, subprocess, tempfile, hashlib
+import sys, os, shutil, argparse, subprocess, tempfile, hashlib
 from pathlib import Path
 
-import olefile
+import gxw_bounded_ole as bounded_ole
 import pythoncom
 from win32com import storagecon
 
@@ -77,13 +77,22 @@ def decode_operand_hex(h):
 
 # Source-derived parser observation.
 def read_top(path, name):
-    ole = olefile.OleFileIO(path); d = ole.openstream(name).read(); ole.close(); return d
+    ole = bounded_ole.open_file(path)
+    try:
+        return bounded_ole.stream(ole, name)
+    finally:
+        ole.close()
 
 
 def hdb_substreams(hdb):
-    h = olefile.OleFileIO(io.BytesIO(hdb))
-    out = {e[0]: h.openstream(e[0]).read() for e in h.listdir()}
-    h.close(); return out
+    h = bounded_ole.open_nested(hdb)
+    try:
+        all_data = bounded_ole.all_streams(h)
+        if any("/" in name for name in all_data):
+            raise ValueError("nested _hdb stream path is not supported by the writer")
+        return all_data
+    finally:
+        h.close()
 
 
 def patch_hdb_substreams(hdb_bytes, targets, tmp):
