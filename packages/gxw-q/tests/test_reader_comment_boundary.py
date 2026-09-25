@@ -57,19 +57,23 @@ class CommentBoundaryTests(unittest.TestCase):
             reader.unified_directory(stream)
 
 
-class PulseInstructionTests(unittest.TestCase):
+class InstructionOperandTests(unittest.TestCase):
     def test_shift_pulse_arity_and_double_modifier_edge(self) -> None:
         program = bytes.fromhex(
             "03000304900104"  # LD M1
-            "06510404020604a8110404e80a04"  # DSFRP D17; encoded auxiliary K10
+            "06510404020604a8110404e80a04"  # DSFRP D17 K10
             "0408040404f8010404f2000404ab6304"  # ORP U1\\G99.0
             "03190304"  # ANB, END
         )
         self.assertEqual(
-            [("LD", "M1"), ("DSFRP", "D17"), ("ORP", "U1\\G99.0"),
+            [("LD", "M1"), ("DSFRP", "D17 K10"), ("ORP", "U1\\G99.0"),
              ("ANB", ""), ("END", "")],
             reader.decode_program(program),
         )
+
+    def test_hex_constant_preserves_unambiguous_leading_zero(self) -> None:
+        self.assertEqual(("H0FF", 4), reader._read_operand(bytes.fromhex("04eaff04"), 0))
+        self.assertEqual(("H0ABCD", 5), reader._read_operand(bytes.fromhex("05eacd ab05"), 0))
 
 
 if __name__ == "__main__":

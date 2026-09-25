@@ -118,7 +118,7 @@ APPLY_MAP = {
     (0x06, 0x51, 0x01): "SFLP", (0x06, 0x51, 0x04): "DSFRP",
     (0x06, 0x52, 0x04): "BKRSTP",
 }
-APPLY_OPERAND_COUNTS = {(0x06, 0x51, 0x04): 1}
+APPLY_OPERAND_COUNTS = {(0x06, 0x51, 0x04): 2}
 # Source-derived parser observation.
 EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x08: "ORP", 0x09: "ORF",
           0x0e: "ANDP", 0x0f: "ANDF", 0x15: "ANDPI", 0x16: "ANDFI"}
@@ -614,7 +614,7 @@ def _format_base(tc, val, w):
             val -= 0x100000000
         return f"K{val}"
     if tc in (0xea, 0xeb):                           # Source-derived parser observation.
-        return f"H{val:X}"
+        return f"H{_cmt_hex(val)}"
     if tc == 0xec:                                   # E 부동소수 상수 (4바이트 IEEE LE)
         fv = struct.unpack("<f", int(val).to_bytes(4, "little"))[0]
         return f"E{fv:g}"
