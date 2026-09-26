@@ -115,8 +115,10 @@ APPLY_MAP = {
     # Source-derived parser observation.
     (0x05, 0x4d, 0x00): "CJ", (0x05, 0x4d, 0x06): "GOEND", (0x05, 0x68, 0x00): "JMP",
     # Source-derived parser observation.
-    (0x06, 0x51, 0x01): "SFLP", (0x06, 0x52, 0x04): "BKRSTP",
+    (0x06, 0x51, 0x01): "SFLP", (0x06, 0x51, 0x04): "DSFRP",
+    (0x06, 0x52, 0x04): "BKRSTP",
 }
+APPLY_OPERAND_COUNTS = {(0x06, 0x51, 0x04): 2}
 # Source-derived parser observation.
 EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x08: "ORP", 0x09: "ORF",
           0x0e: "ANDP", 0x0f: "ANDF", 0x15: "ANDPI", 0x16: "ANDFI"}
@@ -212,10 +214,12 @@ def find_pou_name(b):
 CMT_DIR_DEVICE = {
     0x9c: ("X", 16), 0x9d: ("Y", 16), 0x90: ("M", 10), 0x92: ("L", 10),
     0xa1: ("SB", 16),   # Issue49 Q06UDV A/B: 48 Kn operands per variant
-    0xa0: ("B", 16), 0xa8: ("D", 10), 0xb0: ("ZR", 10), 0xb4: ("W", 16),
+    0xa0: ("B", 16), 0xa8: ("D", 10), 0xaf: ("R", 10),
+    0xb0: ("ZR", 10), 0xb4: ("W", 16),
     0xc2: ("T", 10), 0xc5: ("C", 10), 0x91: ("SM", 10), 0xa9: ("SD", 10),
     0xd0: ("P", 10),
 }
+MAX_COMMENT_DIRECTORY_ENTRIES = 100_000
 
 
 def _cmt_hex(a):
@@ -224,8 +228,22 @@ def _cmt_hex(a):
     return "0" + h if h[0] in "ABCDEF" else h
 
 
+def _append_comment_run(devs, name, radix, addr, count):
+    if len(devs) + count > MAX_COMMENT_DIRECTORY_ENTRIES:
+        raise ValueError("comment directory exceeds entry budget")
+    for offset in range(count):
+        value = addr + offset
+        devs.append(f"{name}{_cmt_hex(value)}" if radix == 16 else f"{name}{value}")
+
+
+def _comment_directory_region(data):
+    start, comments = _longest_comment_run(data)
+    return data[:start] if len(comments) >= 2 else data
+
+
 def comment_directory(data):
-    '1차 range-run 디렉토리(전체화): <code:1><00><addr:2 LE><00 00><count:4 LE> (10B).\n    100 전진분 흡수 - typecode 12종 전부 addr 0..0xFFFF count 1..65535(구 X/Y/M/T/C 트리비얼\n    한정 폐기). best-stream이 최장 코멘트블록 기준이라 가짜 디렉토리에 속지 않는다.'
+    '1차 range-run 디렉토리: <code:1><00><addr:2 LE><00 00><count:4 LE> (10B).\n    CMT_DIR_DEVICE의 타입을 코멘트 본문 시작 전 구간에서만 스캔한다.'
+    data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
     while i <= end:
@@ -236,9 +254,7 @@ def comment_directory(data):
             cnt = struct.unpack_from("<I", data, i + 6)[0]
             if 0 <= addr <= 0xFFFF and 1 <= cnt <= 65535:
                 nm, radix = info
-                for k in range(cnt):
-                    a = addr + k
-                    devs.append(f"{nm}{_cmt_hex(a)}" if radix == 16 else f"{nm}{a}")
+                _append_comment_run(devs, nm, radix, addr, cnt)
                 i += 10
                 continue
         i += 1
@@ -247,6 +263,7 @@ def comment_directory(data):
 
 def high_addr_directory(data):
     '2차 고주소 디렉토리(파일레지스터 등): <addr:4 LE><count:4 LE><typecode×2> (10B).\n    판별자 = typecode 2회 반복(D=a8 a8 ZR=b0 b0). 1차(1B code+2B addr)와 구분.\n    + 청크끝 마커 보정(작업67 phase2): 정상 code×2 엔트리 직후 <…><code8><00>(직전타입 code 누설\n    + addr=직전+stride count동일) 마커를 직전 타입 1개로 흡수(스캔 커서는 정상엔트리 다음=i+10).'
+    data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
     s_code = s_addr = s_prev = -1
@@ -258,9 +275,7 @@ def high_addr_directory(data):
             cnt = struct.unpack_from("<I", data, i + 4)[0]
             if 0 <= addr <= 0xFFFFFF and 1 <= cnt <= 65535:
                 nm, radix = info
-                for k in range(cnt):
-                    a = addr + k
-                    devs.append(f"{nm}{_cmt_hex(a)}" if radix == 16 else f"{nm}{a}")
+                _append_comment_run(devs, nm, radix, addr, cnt)
                 s_prev = s_addr if c1 == s_code else -1
                 s_code, s_addr = c1, addr
                 m = i + 10
@@ -270,7 +285,7 @@ def high_addr_directory(data):
                     m_cnt = struct.unpack_from("<I", data, m + 4)[0]
                     if (data[m + 9] == 0 and data[m + 8] in CMT_DIR_DEVICE
                             and m_addr == s_addr + stride and m_cnt == cnt):
-                        devs.append(f"{nm}{_cmt_hex(m_addr)}" if radix == 16 else f"{nm}{m_addr}")
+                        _append_comment_run(devs, nm, radix, m_addr, 1)
                 i += 10
                 continue
         i += 1
@@ -279,6 +294,7 @@ def high_addr_directory(data):
 
 def ug_directory(data):
     '3차 U\\G(지능형모듈 버퍼) 디렉토리: `ab f8 <addr:2 LE><module:2 LE><count:4 LE>` (10B).\n    ab=G 디바이스 코드 f8=U-모듈 수식자(MOD_UMODULE 동일 상수). addr **십진** 전개 module 16진\n    패딩 → `U{module}\\G{addr+k}`. 100 작업63 q1 RE(precision 100% / recall ~96%, 비트지정 제외).'
+    data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
     while i <= end:
@@ -287,8 +303,7 @@ def ug_directory(data):
             module = struct.unpack_from("<H", data, i + 4)[0]
             cnt = struct.unpack_from("<I", data, i + 6)[0]
             if 1 <= cnt <= 65535:
-                for k in range(cnt):
-                    devs.append(f"U{_cmt_hex(module)}\\G{addr + k}")
+                _append_comment_run(devs, f"U{_cmt_hex(module)}\\G", 10, addr, cnt)
                 i += 10
                 continue
         i += 1
@@ -341,7 +356,8 @@ def ug_bit_directory(data):
 
 
 def unified_directory(data):
-    '1 2 3차 디렉토리를 offset순 단일 스캔으로 통합 전개(통합 = 깨끗한 12-run 타입 시퀀스\n    M,L,SM,T,D,SD,ZR,Y,X,U\\G,W,B). 매 위치 i마다 (1) 3차 ab f8 → (2) 1차 range-run →\n    (3) 2차 고주소+마커보정 순으로 시도. N==M 무영향(ab f8 0건이면 1차와 동일).'
+    '1 2 3차 디렉토리를 offset순 단일 스캔으로 통합 전개한다. 코멘트 본문 시작 전\n    매 위치 i마다 (1) 3차 ab f8 → (2) 1차 range-run → (3) 2차 고주소+마커보정 순으로 시도.'
+    data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
     s_code = s_addr = s_prev = -1
@@ -352,8 +368,7 @@ def unified_directory(data):
             module = struct.unpack_from("<H", data, i + 4)[0]
             cnt = struct.unpack_from("<I", data, i + 6)[0]
             if 1 <= cnt <= 65535:
-                for k in range(cnt):
-                    devs.append(f"U{_cmt_hex(module)}\\G{addr + k}")
+                _append_comment_run(devs, f"U{_cmt_hex(module)}\\G", 10, addr, cnt)
                 s_code = s_addr = s_prev = -1
                 i += 10
                 continue
@@ -365,9 +380,7 @@ def unified_directory(data):
             cnt = struct.unpack_from("<I", data, i + 6)[0]
             if 0 <= addr <= 0xFFFF and 1 <= cnt <= 65535:
                 nm, radix = info1
-                for k in range(cnt):
-                    a = addr + k
-                    devs.append(f"{nm}{_cmt_hex(a)}" if radix == 16 else f"{nm}{a}")
+                _append_comment_run(devs, nm, radix, addr, cnt)
                 s_code = s_addr = s_prev = -1
                 i += 10
                 continue
@@ -379,9 +392,7 @@ def unified_directory(data):
             cnt = struct.unpack_from("<I", data, i + 4)[0]
             if 0 <= addr <= 0xFFFFFF and 1 <= cnt <= 65535:
                 nm, radix = info3
-                for k in range(cnt):
-                    a = addr + k
-                    devs.append(f"{nm}{_cmt_hex(a)}" if radix == 16 else f"{nm}{a}")
+                _append_comment_run(devs, nm, radix, addr, cnt)
                 s_prev = s_addr if c1 == s_code else -1
                 s_code, s_addr = c1, addr
                 m = i + 10
@@ -391,7 +402,7 @@ def unified_directory(data):
                     m_cnt = struct.unpack_from("<I", data, m + 4)[0]
                     if (data[m + 9] == 0 and data[m + 8] in CMT_DIR_DEVICE
                             and m_addr == s_addr + stride and m_cnt == cnt):
-                        devs.append(f"{nm}{_cmt_hex(m_addr)}" if radix == 16 else f"{nm}{m_addr}")
+                        _append_comment_run(devs, nm, radix, m_addr, 1)
                 i += 10
                 continue
         i += 1
@@ -431,11 +442,11 @@ def _comment_candidates(data):
     return out
 
 
-def longest_comment_block(data):
-    """코멘트 풀 최장 연쇄 블록(off==prev.next_off 연쇄, 싱글톤 노이즈 배제)."""
+def _longest_comment_run(data):
+    """Return the start offset and text of the longest contiguous comment run."""
     cands = _comment_candidates(data)
     if not cands:
-        return []
+        return None, []
     best_s = best_l = cur_s = 0
     prev = -1
     for j in range(len(cands)):
@@ -446,7 +457,12 @@ def longest_comment_block(data):
         prev = cands[j][2]
     if len(cands) - cur_s > best_l:
         best_l, best_s = len(cands) - cur_s, cur_s
-    return [cands[k][1] for k in range(best_s, best_s + best_l)]
+    return cands[best_s][0], [cands[k][1] for k in range(best_s, best_s + best_l)]
+
+
+def longest_comment_block(data):
+    """코멘트 풀 최장 연쇄 블록의 텍스트."""
+    return _longest_comment_run(data)[1]
 
 
 def comment_chains(data):
@@ -470,10 +486,6 @@ def comment_chains(data):
 
 def _is_ug(dev):
     return "\\" in dev
-
-
-def _is_system(dev):
-    return dev.startswith("SM") or dev.startswith("SD")
 
 
 def bind_bidirectional(unified, chains):
@@ -507,24 +519,31 @@ def bind_bidirectional(unified, chains):
 
 
 def device_comment_pairs(streams):
-    '전 서브스트림에서 (device, comment) user 쌍 - best-stream(최장 코멘트블록) 선택 +\n    N==M 단조 zip(SM/SD 드롭) / N!=M 통합 디렉토리 재등록 + 양방향 부분복구.\n    100 GxwCommentExtractor.extract() 포팅. 4차 비트지정 U\\G(`ug_bit_directory`)는\n    위치기반 zip과 독립적(자기서술적 addr+text)이라 별도 스캔 후 합산한다.\n    반환 (pairs, warning).'
+    '전 서브스트림에서 (device, comment) user 쌍 - best-stream(최장 코멘트블록) 선택 +\n    N==M 단조 zip / N!=M 통합 디렉토리 재등록 + 양방향 부분복구.\n    100 GxwCommentExtractor.extract() 포팅. 4차 비트지정 U\\G(`ug_bit_directory`)는\n    위치기반 zip과 독립적(자기서술적 addr+text)이라 별도 스캔 후 합산한다.\n    반환 (pairs, warning).'
     best_c, best_d, best_b = [], [], None
     for num, b in streams.items():
-        d = comment_directory(b)
-        if not d:
-            continue
         c = longest_comment_block(b)
+        if len(c) < 2:
+            continue
+        if len(c) > MAX_COMMENT_DIRECTORY_ENTRIES:
+            raise ValueError("comment block exceeds entry budget")
         if len(c) > len(best_c):
+            d = comment_directory(b)
+            if not d:
+                continue
             best_c, best_d, best_b = c, d, b
     if len(best_c) < 2 or not best_d or best_b is None:
         return [], "NoCommentStream"
     bit_pairs = ug_bit_directory(best_b)
     if len(best_d) == len(best_c):                       # N==M 청정 바인딩
-        pairs = [(dev, cm) for dev, cm in zip(best_d, best_c) if not _is_system(dev)]
+        pairs = list(zip(best_d, best_c))
         return pairs + bit_pairs, None
     uni = unified_directory(best_b)                      # N!=M 폴백
+    if len(uni) == len(best_c) and len(set(uni)) == len(uni):
+        pairs = list(zip(uni, best_c))
+        return pairs + bit_pairs, None
     bound = bind_bidirectional(uni, comment_chains(best_b))
-    pairs = [(dev, cm) for dev, cm in zip(uni, bound) if not _is_system(dev)]
+    pairs = list(zip(uni, bound))
     return pairs + bit_pairs, ("CountMismatch", len(uni), len(best_c))
 
 
@@ -595,7 +614,7 @@ def _format_base(tc, val, w):
             val -= 0x100000000
         return f"K{val}"
     if tc in (0xea, 0xeb):                           # Source-derived parser observation.
-        return f"H{val:X}"
+        return f"H{_cmt_hex(val)}"
     if tc == 0xec:                                   # E 부동소수 상수 (4바이트 IEEE LE)
         fv = struct.unpack("<f", int(val).to_bytes(4, "little"))[0]
         return f"E{fv:g}"
@@ -804,7 +823,7 @@ def decode_program(data):
                 continue
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in EDGE04
-                and data[i + 2] in (0x02, 0x03) and data[i + 3] == 0x04):
+                and data[i + 2] in (0x02, 0x03, 0x04) and data[i + 3] == 0x04):
             mnem = EDGE04[data[i + 1]]
             i += 4
             dev, i = _read_operand(data, i)
@@ -1023,11 +1042,12 @@ def decode_program(data):
         # Source-derived parser observation.
         # Source-derived parser observation.
         if b in (0x05, 0x06) and i + 3 < n and 0x40 <= data[i + 1] <= 0x7f:
-            tag = APPLY_MAP.get((b, data[i + 1], data[i + 3]),
+            key = (b, data[i + 1], data[i + 3])
+            tag = APPLY_MAP.get(key,
                                 f"<i:{b:02x}:{data[i + 1]:02x}:{data[i + 3]:02x}>")
             i += 4
             ops = []
-            while len(ops) < 6:
+            while len(ops) < APPLY_OPERAND_COUNTS.get(key, 6):
                 p = _scan_to_operand(data, i, n)
                 if p < 0:
                     break
