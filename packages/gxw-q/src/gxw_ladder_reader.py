@@ -465,8 +465,8 @@ def longest_comment_block(data):
     return _longest_comment_run(data)[1]
 
 
-def comment_chains(data):
-    '코멘트 풀 연쇄 블록별 분리(>=30 필터, 30 미만은 디렉토리영역 노이즈) - N!=M 양방향 매칭용.'
+def _comment_chain_spans(data):
+    """Return substantial contiguous chains with their source byte boundaries."""
     cands = _comment_candidates(data)
     if not cands:
         return []
@@ -475,13 +475,81 @@ def comment_chains(data):
         if prev != -1 and cands[j][0] != prev:
             ch = [cands[k][1] for k in range(cs, j)]
             if len(ch) >= 30:
-                out.append(ch)
+                out.append((cands[cs][0], cands[j - 1][2], ch))
             cs = j
         prev = cands[j][2]
     tail = [cands[k][1] for k in range(cs, len(cands))]
     if len(tail) >= 30:
-        out.append(tail)
+        out.append((cands[cs][0], cands[-1][2], tail))
     return out
+
+
+def comment_chains(data):
+    '코멘트 풀 연쇄 블록별 분리(>=30 필터, 30 미만은 디렉토리영역 노이즈) - N!=M 양방향 매칭용.'
+    return [chain for _start, _end, chain in _comment_chain_spans(data)]
+
+
+def _unaddressed_module_labels(data):
+    """Count exact intervening label records; their device addresses are unknown."""
+    pos = count = 0
+    while pos < len(data):
+        if pos + 4 > len(data):
+            return None
+        length = struct.unpack_from("<I", data, pos)[0]
+        end = pos + 4 + 2 * length + 4
+        if not (4 <= length <= 13 and end <= len(data)):
+            return None
+        if data[end - 6:end] != b"\0" * 6:
+            return None
+        try:
+            label = data[pos + 4:end - 6].decode("utf-16le")
+        except UnicodeError:
+            return None
+        if not _MODULE_LABEL_RE.fullmatch(label):
+            return None
+        pos = end
+        count += 1
+    return count or None
+
+
+def _adjacent_module_label(data, boundary, *, before):
+    """Detect a complete label record touching an outer comment-chain edge."""
+    for length in range(4, 14):
+        size = 4 + 2 * length + 4
+        start = boundary - size if before else boundary
+        end = boundary if before else boundary + size
+        if start >= 0 and end <= len(data):
+            if _unaddressed_module_labels(data[start:end]) is not None:
+                return True
+    return False
+
+
+def verified_split_comment_chains(data, directory):
+    """Verify a split comment pool without assigning addresses to gap labels.
+
+    Return (ordered comments, unaddressed label count), or None. The caller
+    must report the excluded labels separately from complete comment coverage.
+    """
+    spans = _comment_chain_spans(data)
+    if len(spans) < 2 or len(directory) > MAX_COMMENT_DIRECTORY_ENTRIES:
+        return None
+    if len(directory) != sum(len(chain) for _start, _end, chain in spans):
+        return None
+    if len(set(directory)) != len(directory):
+        return None
+    first_start = spans[0][0]
+    if (_adjacent_module_label(data, first_start, before=True)
+            or _adjacent_module_label(data, spans[-1][1], before=False)):
+        return None
+    if unified_directory(data[:first_start]) != directory:
+        return None
+    excluded = 0
+    for (_start, end, _chain), (next_start, _next_end, _next_chain) in zip(spans, spans[1:]):
+        count = _unaddressed_module_labels(data[end:next_start])
+        if count is None:
+            return None
+        excluded += count
+    return [comment for _start, _end, chain in spans for comment in chain], excluded
 
 
 def _is_ug(dev):
@@ -535,6 +603,15 @@ def device_comment_pairs(streams):
     if len(best_c) < 2 or not best_d or best_b is None:
         return [], "NoCommentStream"
     bit_pairs = ug_bit_directory(best_b)
+    if len(_comment_chain_spans(best_b)) >= 2:
+        uni = unified_directory(best_b)
+        verified = verified_split_comment_chains(best_b, uni)
+        if verified is not None and len(set(uni + [device for device, _text in bit_pairs])) == len(uni) + len(bit_pairs):
+            ordered, excluded_labels = verified
+            # Gap labels have no encoded address. Report them separately.
+            return list(zip(uni, ordered)) + bit_pairs, ("UnaddressedModuleLabels", excluded_labels)
+        bound = bind_bidirectional(uni, comment_chains(best_b))
+        return list(zip(uni, bound)) + bit_pairs, ("CountMismatch", len(uni), len(best_c))
     if len(best_d) == len(best_c):                       # N==M 청정 바인딩
         pairs = list(zip(best_d, best_c))
         return pairs + bit_pairs, None

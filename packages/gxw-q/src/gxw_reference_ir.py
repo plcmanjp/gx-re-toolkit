@@ -57,6 +57,31 @@ def _parse_int(text: str, radix: int) -> int | None:
         return None
 
 
+def split_operands(operand_text: str) -> list[str]:
+    """Keep quoted source literals intact while retaining each raw token.
+
+    Quote or escape dialects beyond one paired double quote are unverified.
+    Unmatched quotes keep the remaining text in one token, which parse_operand
+    marks unknown rather than interpreting its contents as separate devices.
+    """
+    tokens: list[str] = []
+    start: int | None = None
+    quoted = False
+    for index, char in enumerate(operand_text):
+        if char.isspace() and not quoted:
+            if start is not None:
+                tokens.append(operand_text[start:index])
+                start = None
+            continue
+        if start is None:
+            start = index
+        if char == '"':
+            quoted = not quoted
+    if start is not None:
+        tokens.append(operand_text[start:])
+    return tokens
+
+
 def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
     'Source-derived parser observation.'
     base: dict[str, Any] = {
@@ -67,7 +92,7 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
         "device": None,
         "constant": None,
     }
-    if raw_token.startswith('"') and raw_token.endswith('"'):
+    if raw_token.startswith('"') and raw_token.endswith('"') and raw_token.count('"') == 2:
         return {**base, "kind": "literal", "status": "decoded"}
     match = DEVICE.fullmatch(raw_token)
     if not match:
@@ -187,7 +212,7 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
             opcode, operand_text, comment = row
             if opcode in {"__STMT__", "__NOTE__"}:
                 continue
-            raw_tokens = operand_text.split() if operand_text else []
+            raw_tokens = split_operands(operand_text) if operand_text else []
             operands = [parse_operand(token, position) for position, token in enumerate(raw_tokens)]
             total_operands += len(operands)
             if total_operands > MAX_OPERANDS:

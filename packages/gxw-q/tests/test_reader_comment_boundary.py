@@ -21,6 +21,73 @@ def _comment(value: str, padding: bytes = b"\0" * 4) -> bytes:
 
 
 class CommentBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def _split_stream(*, second_count: int = 30, duplicate: bool = False,
+                      gap: bytes | None = None) -> bytes:
+        second_start = 0 if duplicate else 30
+        directory = _range(0x90, 0, 30) + _range(0x90, second_start, 30)
+        first = b"".join(_comment(f"first {i}") for i in range(30))
+        second = b"".join(_comment(f"second {i}") for i in range(second_count))
+        if gap is None:
+            gap = _comment("MODULE1") + _comment("MODULE2")
+        return directory + first + gap + second
+
+    def test_split_chains_preserve_source_order_and_report_unaddressed_labels(self) -> None:
+        stream = self._split_stream()
+        directory = reader.unified_directory(stream)
+        verified = reader.verified_split_comment_chains(stream, directory)
+        self.assertIsNotNone(verified)
+        comments, excluded = verified
+        self.assertEqual(60, len(comments))
+        self.assertEqual(2, excluded)
+        self.assertEqual("first 0", comments[0])
+        self.assertEqual("second 0", comments[30])
+        pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+        self.assertEqual(("UnaddressedModuleLabels", 2), warning)
+        self.assertEqual(60, len(pairs))
+        self.assertEqual(("M30", "second 0"), pairs[30])
+
+    def test_split_chains_reject_missing_duplicate_or_ambiguous_content(self) -> None:
+        cases = (
+            self._split_stream(second_count=29),
+            self._split_stream(duplicate=True),
+            self._split_stream(gap=_comment("MODULE1") + _comment("ambiguous text")),
+        )
+        for stream in cases:
+            with self.subTest(stream_length=len(stream)):
+                self.assertIsNone(reader.verified_split_comment_chains(
+                    stream, reader.unified_directory(stream)))
+                _pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+                self.assertNotEqual(("UnaddressedModuleLabels", 2), warning)
+
+    def test_split_chain_cannot_take_first_pass_count_shortcut(self) -> None:
+        stream = (
+            _range(0x90, 0, 30) + _module_range(2, 100, 30)
+            + b"".join(_comment(f"first {i}") for i in range(30))
+            + _comment("MODULE1")
+            + b"".join(_comment(f"second {i}") for i in range(30))
+        )
+        self.assertEqual(30, len(reader.comment_directory(stream)))
+        pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+        self.assertEqual(60, len(pairs))
+        self.assertEqual(("UnaddressedModuleLabels", 1), warning)
+        self.assertEqual(("U2\\G100", "second 0"), pairs[30])
+
+    def test_split_chains_reject_unreported_outer_labels(self) -> None:
+        stream = self._split_stream()
+        directory_size = 2 * len(_range(0x90, 0, 30))
+        cases = (
+            stream[:directory_size] + _comment("MODULE0") + stream[directory_size:],
+            stream + _comment("MODULE3"),
+            stream[:directory_size] + _comment("MODULE0") + stream[directory_size:] + _comment("MODULE3"),
+        )
+        for candidate in cases:
+            with self.subTest(stream_length=len(candidate)):
+                directory = reader.unified_directory(candidate)
+                self.assertIsNone(reader.verified_split_comment_chains(candidate, directory))
+                _pairs, warning = reader.device_comment_pairs({"synthetic": candidate})
+                self.assertNotEqual(("UnaddressedModuleLabels", 2), warning)
+
     def test_comment_text_cannot_be_reinterpreted_as_directory(self) -> None:
         directory = (
             b"\0" * 10

@@ -10,6 +10,36 @@ REFERENCE = importlib.import_module("gxw_reference_ir")
 
 
 class GroupedDeviceReferenceTests(unittest.TestCase):
+    def test_quoted_literal_with_spaces_keeps_raw_operand_and_position(self) -> None:
+        text = '"ALPHA BETA" D10'
+        self.assertEqual(['"ALPHA BETA"', "D10"], REFERENCE.split_operands(text))
+        result = REFERENCE.project_rows(
+            [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+              "rows": [("MOV", text, "")]}], input_sha256="a" * 64,
+        )
+        self.assertEqual("COMPLETE", result["analysis"]["state"])
+        operands = result["occurrences"][0]["operands"]
+        self.assertEqual([('"ALPHA BETA"', "literal", "decoded", 0),
+                          ("D10", "device", "decoded", 1)],
+                         [(item["raw_token"], item["kind"], item["status"], item["position"])
+                          for item in operands])
+
+    def test_malformed_quotes_preserve_text_and_leave_projection_partial(self) -> None:
+        for text, raw_tokens in (
+            ('"ALPHA BETA D10', ['"ALPHA BETA D10']),
+            ('"ALPHA"BETA D10', ['"ALPHA"BETA', "D10"]),
+            ('"ALPHA""BETA" D10', ['"ALPHA""BETA"', "D10"]),
+            ('D10" M0', ['D10" M0']),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(raw_tokens, REFERENCE.split_operands(text))
+                result = REFERENCE.project_rows(
+                    [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+                      "rows": [("MOV", text, "")]}], input_sha256="a" * 64,
+                )
+                self.assertEqual("PARTIAL", result["analysis"]["state"])
+                self.assertEqual("unknown", result["occurrences"][0]["operands"][0]["status"])
+
     def test_grouped_x_y_are_devices_and_numeric_literals_remain_constants(self) -> None:
         for raw, family, address, digit_width in (
             ("K1X110", "X", 0x110, 1),
