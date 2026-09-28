@@ -120,7 +120,8 @@ APPLY_MAP = {
 }
 APPLY_OPERAND_COUNTS = {(0x06, 0x51, 0x04): 2}
 # Source-derived parser observation.
-EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x08: "ORP", 0x09: "ORF",
+EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x05: "LDFI",
+          0x08: "ORP", 0x09: "ORF", 0x0a: "ORPI", 0x0b: "ORFI",
           0x0e: "ANDP", 0x0f: "ANDF", 0x15: "ANDPI", 0x16: "ANDFI"}
 # Source-derived parser observation.
 COMM_PFX = {0x71: "ZP.", 0x72: "GP."}
@@ -465,8 +466,8 @@ def longest_comment_block(data):
     return _longest_comment_run(data)[1]
 
 
-def comment_chains(data):
-    '코멘트 풀 연쇄 블록별 분리(>=30 필터, 30 미만은 디렉토리영역 노이즈) - N!=M 양방향 매칭용.'
+def _comment_chain_spans(data):
+    """Return substantial contiguous chains with their source byte boundaries."""
     cands = _comment_candidates(data)
     if not cands:
         return []
@@ -475,13 +476,136 @@ def comment_chains(data):
         if prev != -1 and cands[j][0] != prev:
             ch = [cands[k][1] for k in range(cs, j)]
             if len(ch) >= 30:
-                out.append(ch)
+                out.append((cands[cs][0], cands[j - 1][2], ch))
             cs = j
         prev = cands[j][2]
     tail = [cands[k][1] for k in range(cs, len(cands))]
     if len(tail) >= 30:
-        out.append(tail)
+        out.append((cands[cs][0], cands[-1][2], tail))
     return out
+
+
+def comment_chains(data):
+    '코멘트 풀 연쇄 블록별 분리(>=30 필터, 30 미만은 디렉토리영역 노이즈) - N!=M 양방향 매칭용.'
+    return [chain for _start, _end, chain in _comment_chain_spans(data)]
+
+
+def _unaddressed_module_labels(data):
+    """Count complete candidate module labels in a split-chain gap."""
+    labels = _module_label_records(data)
+    return len(labels) if labels else None
+
+
+def _module_label_records(data):
+    """Decode bounded, complete, contiguous labels in a split-chain gap."""
+    pos = 0
+    labels = []
+    while pos < len(data):
+        if pos + 4 > len(data):
+            return None
+        length = struct.unpack_from("<I", data, pos)[0]
+        end = pos + 4 + 2 * length + 4
+        if not (4 <= length <= 13 and end <= len(data)):
+            return None
+        if data[end - 6:end] != b"\0" * 6:
+            return None
+        try:
+            label = data[pos + 4:end - 6].decode("utf-16le")
+        except UnicodeError:
+            return None
+        if not _MODULE_LABEL_RE.fullmatch(label):
+            return None
+        if len(labels) >= MAX_COMMENT_DIRECTORY_ENTRIES:
+            return None
+        pos = end
+        labels.append(label)
+    return labels or None
+
+
+def _bounded_u_comment_directory(data):
+    """Expand observed d8 range runs only for U0..U3, before comment text."""
+    devices = []
+    i, last_end = 0, None
+    while i + 10 <= len(data):
+        if data[i:i + 2] == b"\xd8\x00" and data[i + 4:i + 6] == b"\0\0":
+            start = struct.unpack_from("<H", data, i + 2)[0]
+            count = struct.unpack_from("<I", data, i + 6)[0]
+            # A bytewise scan can meet d8 inside another record. Match the
+            # same count boundary as the ordinary 10-byte range-run parser.
+            if not 1 <= count <= 65535:
+                i += 1
+                continue
+            if last_end is not None and i != last_end:
+                return None
+            if not (0 <= start <= 3 and 1 <= count <= 4 - start):
+                return None
+            run = [f"U{addr}" for addr in range(start, start + count)]
+            if devices and int(devices[-1][1:]) >= start:
+                return None
+            devices.extend(run)
+            i += 10
+            last_end = i
+            continue
+        i += 1
+    return devices or None
+
+
+def _verified_u_comment_pairs(data, spans, expected_count):
+    """Bind gap labels only when bounded d8 runs cover every label in order."""
+    if len(spans) != 2:
+        return None
+    devices = _bounded_u_comment_directory(data[:spans[0][0]])
+    if devices is None or len(devices) != expected_count:
+        return None
+    labels = []
+    for (_start, end, _chain), (next_start, _next_end, _next_chain) in zip(spans, spans[1:]):
+        gap_labels = _module_label_records(data[end:next_start])
+        if gap_labels is None:
+            return None
+        labels.extend(gap_labels)
+    if len(labels) != len(devices):
+        return None
+    return list(zip(devices, labels))
+
+
+def _adjacent_module_label(data, boundary, *, before):
+    """Detect a complete label record touching an outer comment-chain edge."""
+    for length in range(4, 14):
+        size = 4 + 2 * length + 4
+        start = boundary - size if before else boundary
+        end = boundary if before else boundary + size
+        if start >= 0 and end <= len(data):
+            if _unaddressed_module_labels(data[start:end]) is not None:
+                return True
+    return False
+
+
+def verified_split_comment_chains(data, directory):
+    """Verify a split comment pool without assigning addresses to gap labels.
+
+    Return (ordered comments, unaddressed label count), or None. The caller
+    must report the excluded labels separately from complete comment coverage.
+    """
+    spans = _comment_chain_spans(data)
+    if len(spans) < 2 or len(directory) > MAX_COMMENT_DIRECTORY_ENTRIES:
+        return None
+    if len(directory) != sum(len(chain) for _start, _end, chain in spans):
+        return None
+    if len(set(directory)) != len(directory):
+        return None
+    first_start = spans[0][0]
+    if (_adjacent_module_label(data, first_start, before=True)
+            or _adjacent_module_label(data, spans[-1][1], before=False)):
+        return None
+    if unified_directory(data[:first_start]) != directory:
+        return None
+    excluded = 0
+    for (_start, end, _chain), (next_start, _next_end, _next_chain) in zip(spans, spans[1:]):
+        count = _unaddressed_module_labels(data[end:next_start])
+        if count is None:
+            return None
+        excluded += count
+    return [comment for _start, _end, chain in spans for comment in chain], excluded
 
 
 def _is_ug(dev):
@@ -535,6 +659,18 @@ def device_comment_pairs(streams):
     if len(best_c) < 2 or not best_d or best_b is None:
         return [], "NoCommentStream"
     bit_pairs = ug_bit_directory(best_b)
+    if len(_comment_chain_spans(best_b)) >= 2:
+        uni = unified_directory(best_b)
+        verified = verified_split_comment_chains(best_b, uni)
+        if verified is not None and len(set(uni + [device for device, _text in bit_pairs])) == len(uni) + len(bit_pairs):
+            ordered, excluded_labels = verified
+            u_pairs = _verified_u_comment_pairs(best_b, _comment_chain_spans(best_b), excluded_labels)
+            normal_pairs = list(zip(uni, ordered)) + bit_pairs
+            if u_pairs is not None and len(set(device for device, _text in normal_pairs + u_pairs)) == len(normal_pairs) + len(u_pairs):
+                return normal_pairs + u_pairs, None
+            return normal_pairs, ("UnaddressedModuleLabels", excluded_labels)
+        bound = bind_bidirectional(uni, comment_chains(best_b))
+        return list(zip(uni, bound)) + bit_pairs, ("CountMismatch", len(uni), len(best_c))
     if len(best_d) == len(best_c):                       # N==M 청정 바인딩
         pairs = list(zip(best_d, best_c))
         return pairs + bit_pairs, None
@@ -754,6 +890,14 @@ def decode_program(data):
                 and data[k + 3] in (0x04, 0x05) and data[k + 4] in DEVICE):
             start = k
             break
+        # A leading EDGE04 contact is an IL start only with an observed 02
+        # marker and a complete direct device operand frame.
+        if (k + 7 < len(data) and data[k] == 0x04 and data[k + 1] in EDGE04
+                and data[k + 2:k + 4] == b"\x02\x04"
+                and _is_operand_frame(data, k + 4, len(data))
+                and data[k + 5] in DEVICE):
+            start = k
+            break
         # 수식자 접점/코일이 첫 명령인 경우도 실제 명령 시작점이다.
         # batch-020 Q06UDV GX Works2 export: 04 00 02 04 + 04 f0 0c 04 + M4100.
         if (k + 5 < len(data) and data[k] == 0x04 and data[k + 1] in INSTR
@@ -824,10 +968,17 @@ def decode_program(data):
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in EDGE04
                 and data[i + 2] in (0x02, 0x03, 0x04) and data[i + 3] == 0x04):
-            mnem = EDGE04[data[i + 1]]
+            opcode = data[i + 1]
+            mnem = EDGE04[opcode]
             i += 4
+            if not _is_operand_frame(data, i, n):
+                out.append((f"<i:04:{opcode:02x}:operand>", ""))
+                continue
             dev, i = _read_operand(data, i)
-            out.append((mnem, dev or ""))
+            if dev and "<dev:" not in dev:
+                out.append((mnem, dev))
+            else:
+                out.append((f"<i:04:{opcode:02x}:operand>", dev or ""))
             continue
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in SPECIAL04
