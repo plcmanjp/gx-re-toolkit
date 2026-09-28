@@ -490,8 +490,15 @@ def comment_chains(data):
 
 
 def _unaddressed_module_labels(data):
-    """Count exact intervening label records; their device addresses are unknown."""
-    pos = count = 0
+    """Count complete candidate module labels in a split-chain gap."""
+    labels = _module_label_records(data)
+    return len(labels) if labels else None
+
+
+def _module_label_records(data):
+    """Decode bounded, complete, contiguous labels in a split-chain gap."""
+    pos = 0
+    labels = []
     while pos < len(data):
         if pos + 4 > len(data):
             return None
@@ -507,9 +514,57 @@ def _unaddressed_module_labels(data):
             return None
         if not _MODULE_LABEL_RE.fullmatch(label):
             return None
+        if len(labels) >= MAX_COMMENT_DIRECTORY_ENTRIES:
+            return None
         pos = end
-        count += 1
-    return count or None
+        labels.append(label)
+    return labels or None
+
+
+def _bounded_u_comment_directory(data):
+    """Expand observed d8 range runs only for U0..U3, before comment text."""
+    devices = []
+    i, last_end = 0, None
+    while i + 10 <= len(data):
+        if data[i:i + 2] == b"\xd8\x00" and data[i + 4:i + 6] == b"\0\0":
+            start = struct.unpack_from("<H", data, i + 2)[0]
+            count = struct.unpack_from("<I", data, i + 6)[0]
+            # A bytewise scan can meet d8 inside another record. Match the
+            # same count boundary as the ordinary 10-byte range-run parser.
+            if not 1 <= count <= 65535:
+                i += 1
+                continue
+            if last_end is not None and i != last_end:
+                return None
+            if not (0 <= start <= 3 and 1 <= count <= 4 - start):
+                return None
+            run = [f"U{addr}" for addr in range(start, start + count)]
+            if devices and int(devices[-1][1:]) >= start:
+                return None
+            devices.extend(run)
+            i += 10
+            last_end = i
+            continue
+        i += 1
+    return devices or None
+
+
+def _verified_u_comment_pairs(data, spans, expected_count):
+    """Bind gap labels only when bounded d8 runs cover every label in order."""
+    if len(spans) != 2:
+        return None
+    devices = _bounded_u_comment_directory(data[:spans[0][0]])
+    if devices is None or len(devices) != expected_count:
+        return None
+    labels = []
+    for (_start, end, _chain), (next_start, _next_end, _next_chain) in zip(spans, spans[1:]):
+        gap_labels = _module_label_records(data[end:next_start])
+        if gap_labels is None:
+            return None
+        labels.extend(gap_labels)
+    if len(labels) != len(devices):
+        return None
+    return list(zip(devices, labels))
 
 
 def _adjacent_module_label(data, boundary, *, before):
@@ -608,8 +663,11 @@ def device_comment_pairs(streams):
         verified = verified_split_comment_chains(best_b, uni)
         if verified is not None and len(set(uni + [device for device, _text in bit_pairs])) == len(uni) + len(bit_pairs):
             ordered, excluded_labels = verified
-            # Gap labels have no encoded address. Report them separately.
-            return list(zip(uni, ordered)) + bit_pairs, ("UnaddressedModuleLabels", excluded_labels)
+            u_pairs = _verified_u_comment_pairs(best_b, _comment_chain_spans(best_b), excluded_labels)
+            normal_pairs = list(zip(uni, ordered)) + bit_pairs
+            if u_pairs is not None and len(set(device for device, _text in normal_pairs + u_pairs)) == len(normal_pairs) + len(u_pairs):
+                return normal_pairs + u_pairs, None
+            return normal_pairs, ("UnaddressedModuleLabels", excluded_labels)
         bound = bind_bidirectional(uni, comment_chains(best_b))
         return list(zip(uni, bound)) + bit_pairs, ("CountMismatch", len(uni), len(best_c))
     if len(best_d) == len(best_c):                       # N==M 청정 바인딩
