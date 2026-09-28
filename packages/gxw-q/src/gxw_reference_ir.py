@@ -44,6 +44,9 @@ CONTROL = re.compile(r"^(?P<kind>N|P)(?P<address>[0-9]+)$")
 INDEXED_K = re.compile(r"^K(?P<value>-?[0-9]+)Z(?P<index>[0-9]+)$")
 _CONTROL_READ_FORMS = frozenset({("N", "MC", 0, 2), ("N", "MCR", 0, 1),
                                  ("P", "CALL", 0, 1), ("P", "XCALL", 0, 1)})
+# MELSEC-Q/L Programming Manual (Common Instruction), SH-080809ENG, 5.1:
+# each (S) of these contact instructions is a source bit device.
+_CONTACT_READ = frozenset({"LDFI", "ANDF", "ORPI", "ORFI"})
 
 
 class ReferenceIrError(ValueError):
@@ -145,6 +148,9 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
 
 
 def _role(opcode: str, position: int, operand_count: int) -> tuple[str, str]:
+    if opcode in _CONTACT_READ:
+        return (("read", "CONTACT_SOURCE_DEVICE") if position == 0 and operand_count == 1 else
+                ("unknown", "CONTACT_FORM_UNVERIFIED"))
     destination = legacy.dest_index(opcode, operand_count)
     if destination is None:
         if opcode.startswith("<"):

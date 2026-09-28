@@ -10,6 +10,30 @@ REFERENCE = importlib.import_module("gxw_reference_ir")
 
 
 class GroupedDeviceReferenceTests(unittest.TestCase):
+    def test_q_contact_forms_read_one_source_device(self) -> None:
+        for opcode in ("LDFI", "ANDF", "ORPI", "ORFI"):
+            with self.subTest(opcode=opcode):
+                result = REFERENCE.project_rows(
+                    [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+                      "rows": [(opcode, "M0", "")]}], input_sha256="a" * 64,
+                )
+                self.assertEqual("COMPLETE", result["analysis"]["state"])
+                operand = result["occurrences"][0]["operands"][0]
+                self.assertEqual(("decoded", "read", "CONTACT_SOURCE_DEVICE"),
+                                 (operand["status"], operand["access"], operand["access_basis"]))
+                self.assertEqual("M0", operand["raw_token"])
+
+    def test_q_contact_extra_operand_remains_partial(self) -> None:
+        for opcode in ("LDFI", "ANDF", "ORPI", "ORFI"):
+            with self.subTest(opcode=opcode):
+                result = REFERENCE.project_rows(
+                    [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+                      "rows": [(opcode, "M0 M1", "")]}], input_sha256="a" * 64,
+                )
+                self.assertEqual("PARTIAL", result["analysis"]["state"])
+                self.assertEqual(["unknown", "unknown"],
+                                 [operand["access"] for operand in result["occurrences"][0]["operands"]])
+
     def test_reader_control_tokens_and_indexed_k_constant_are_classified_without_target_claim(self) -> None:
         for raw in ("N0", "N12", "P0", "P400"):
             with self.subTest(raw=raw):
