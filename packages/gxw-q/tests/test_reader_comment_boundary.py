@@ -216,6 +216,40 @@ class CommentBoundaryTests(unittest.TestCase):
 
 
 class InstructionOperandTests(unittest.TestCase):
+    def test_all_edge_contacts_at_program_start_and_after_ld(self) -> None:
+        edge_names = {
+            0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x05: "LDFI",
+            0x08: "ORP", 0x09: "ORF", 0x0A: "ORPI", 0x0B: "ORFI",
+            0x0E: "ANDP", 0x0F: "ANDF", 0x15: "ANDPI", 0x16: "ANDFI",
+        }
+        ld = bytes.fromhex("03 00 03 04 90 01 04")
+        for opcode, name in edge_names.items():
+            frame = bytes((4, opcode, 2, 4, 4, 0x90, 10, 4))
+            with self.subTest(opcode=opcode):
+                self.assertEqual([(name, "M10"), ("END", "")], reader.decode_program(frame))
+                self.assertEqual([(name, "M10"), ("LD", "M1"), ("END", "")],
+                                 reader.decode_program(b"\xff\xfe" + frame + ld))
+                self.assertEqual([("LD", "M1"), (name, "M10"), ("END", "")],
+                                 reader.decode_program(ld + frame))
+
+    def test_edge_contact_requires_complete_operand_frame(self) -> None:
+        for bad, token in (
+            (bytes.fromhex("04 02 02 04 04 90 0a"), ("<i:04:02:operand>", "")),
+            (bytes.fromhex("04 05 02 04 04 90 0d 05"), ("<i:04:05:operand>", "")),
+            (bytes.fromhex("04 0a 02 04 04 ff 1a 04"), ("<i:04:0a:operand>", "")),
+            (bytes.fromhex("04 0a 02 04 04 f8 01 04 04 ff 1a 04"),
+             ("<i:04:0a:operand>", "U1\\<dev:ff>26")),
+            (bytes.fromhex("04 0b 02 03 04 90 1b 04"), None),
+        ):
+            with self.subTest(frame=bad.hex()):
+                rows = reader.decode_program(bad)
+                self.assertNotIn(("LDP", "M10"), rows)
+                self.assertNotIn(("LDFI", "M13"), rows)
+                self.assertNotIn(("ORPI", "M26"), rows)
+                self.assertNotIn(("ORFI", "M27"), rows)
+                if token is not None:
+                    self.assertIn(token, rows)
+
     def test_shift_pulse_arity_and_double_modifier_edge(self) -> None:
         program = bytes.fromhex(
             "03000304900104"  # LD M1

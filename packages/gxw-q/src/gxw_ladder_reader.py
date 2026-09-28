@@ -120,7 +120,8 @@ APPLY_MAP = {
 }
 APPLY_OPERAND_COUNTS = {(0x06, 0x51, 0x04): 2}
 # Source-derived parser observation.
-EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x08: "ORP", 0x09: "ORF",
+EDGE04 = {0x02: "LDP", 0x03: "LDF", 0x04: "LDPI", 0x05: "LDFI",
+          0x08: "ORP", 0x09: "ORF", 0x0a: "ORPI", 0x0b: "ORFI",
           0x0e: "ANDP", 0x0f: "ANDF", 0x15: "ANDPI", 0x16: "ANDFI"}
 # Source-derived parser observation.
 COMM_PFX = {0x71: "ZP.", 0x72: "GP."}
@@ -889,6 +890,14 @@ def decode_program(data):
                 and data[k + 3] in (0x04, 0x05) and data[k + 4] in DEVICE):
             start = k
             break
+        # A leading EDGE04 contact is an IL start only with an observed 02
+        # marker and a complete direct device operand frame.
+        if (k + 7 < len(data) and data[k] == 0x04 and data[k + 1] in EDGE04
+                and data[k + 2:k + 4] == b"\x02\x04"
+                and _is_operand_frame(data, k + 4, len(data))
+                and data[k + 5] in DEVICE):
+            start = k
+            break
         # 수식자 접점/코일이 첫 명령인 경우도 실제 명령 시작점이다.
         # batch-020 Q06UDV GX Works2 export: 04 00 02 04 + 04 f0 0c 04 + M4100.
         if (k + 5 < len(data) and data[k] == 0x04 and data[k + 1] in INSTR
@@ -959,10 +968,17 @@ def decode_program(data):
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in EDGE04
                 and data[i + 2] in (0x02, 0x03, 0x04) and data[i + 3] == 0x04):
-            mnem = EDGE04[data[i + 1]]
+            opcode = data[i + 1]
+            mnem = EDGE04[opcode]
             i += 4
+            if not _is_operand_frame(data, i, n):
+                out.append((f"<i:04:{opcode:02x}:operand>", ""))
+                continue
             dev, i = _read_operand(data, i)
-            out.append((mnem, dev or ""))
+            if dev and "<dev:" not in dev:
+                out.append((mnem, dev))
+            else:
+                out.append((f"<i:04:{opcode:02x}:operand>", dev or ""))
             continue
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in SPECIAL04
