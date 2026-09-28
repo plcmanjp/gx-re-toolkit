@@ -10,6 +10,83 @@ REFERENCE = importlib.import_module("gxw_reference_ir")
 
 
 class GroupedDeviceReferenceTests(unittest.TestCase):
+    def test_reader_control_tokens_and_indexed_k_constant_are_classified_without_target_claim(self) -> None:
+        for raw in ("N0", "N12", "P0", "P400"):
+            with self.subTest(raw=raw):
+                operand = REFERENCE.parse_operand(raw, 0)
+                self.assertEqual(("control", "decoded", None, None),
+                                 (operand["kind"], operand["status"], operand["device"],
+                                  operand["constant"]))
+                self.assertEqual(raw, operand["raw_token"])
+        indexed = REFERENCE.parse_operand("K0Z16", 0)
+        self.assertEqual(("constant", "decoded", "K", 0),
+                         (indexed["kind"], indexed["status"],
+                          indexed["constant"]["notation"], indexed["constant"]["value"]))
+        self.assertEqual({"kind": "Z", "number": 16, "access": "read"},
+                         indexed["constant"]["index"])
+
+        rows = [("MC", "N0 M0", ""), ("MCR", "N0", ""),
+                ("CALL", "P400", ""), ("XCALL", "P1", ""),
+                ("MOV", "K0Z16 D10", "")]
+        result = REFERENCE.project_rows(
+            [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+              "rows": rows}], input_sha256="a" * 64,
+        )
+        self.assertEqual((REFERENCE.SCHEMA_NAME, REFERENCE.SCHEMA_VERSION),
+                         (result["schema_name"], result["schema_version"]))
+        self.assertEqual("COMPLETE", result["analysis"]["state"])
+        for occurrence in result["occurrences"][:4]:
+            control = occurrence["operands"][0]
+            self.assertEqual(("decoded", "read", "OBSERVED_CONTROL_READ_FORM"),
+                             (control["status"], control["access"], control["access_basis"]))
+        indexed_coverage = result["occurrences"][4]["operands"][0]["coverage"]
+        self.assertEqual(("DYNAMIC", None, "INDEXED_CONSTANT_ADDRESS"),
+                         (indexed_coverage["state"], indexed_coverage["addresses"],
+                          indexed_coverage["reason"]))
+
+    def test_control_and_indexed_constant_negative_grammar_stays_unknown(self) -> None:
+        for raw in ("N", "P", "N-1", "P+1", "N1Z2", "P1.0", "KZ16", "K0Z", "K0ZZ16",
+                    "K0Z-1", "H0Z16", "K0Z16.0"):
+            with self.subTest(raw=raw):
+                self.assertEqual("unknown", REFERENCE.parse_operand(raw, 0)["status"])
+
+    def test_indexed_k_count_does_not_create_static_bmov_or_fmov_spans(self) -> None:
+        rows = [("BMOV", "D0 D100 K3Z1", ""), ("FMOV", "K5 D200 K3Z1", "")]
+        result = REFERENCE.project_rows(
+            [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+              "rows": rows}], input_sha256="a" * 64,
+        )
+        self.assertEqual("COMPLETE", result["analysis"]["state"])
+        for occurrence, positions in zip(result["occurrences"], ((0, 1), (1,))):
+            for position in positions:
+                with self.subTest(opcode=occurrence["record"]["opcode"], position=position):
+                    coverage = occurrence["operands"][position]["coverage"]
+                    self.assertEqual(("DYNAMIC", None, "COUNT_NOT_STATIC_K"),
+                                     (coverage["state"], coverage["addresses"], coverage["reason"]))
+            count = occurrence["operands"][2]["coverage"]
+            self.assertEqual(("DYNAMIC", None, "INDEXED_CONSTANT_ADDRESS"),
+                             (count["state"], count["addresses"], count["reason"]))
+
+    def test_control_context_and_indexed_k_write_are_not_claimed(self) -> None:
+        for opcode, text, index in (("OUT", "P400", 0), ("MOV", "N0 D10", 0),
+                                    ("MOV", "D0 K0Z16", 1)):
+            with self.subTest(opcode=opcode, text=text):
+                result = REFERENCE.project_rows(
+                    [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
+                      "rows": [(opcode, text, "")]}], input_sha256="a" * 64,
+                )
+                operand = result["occurrences"][0]["operands"][index]
+                self.assertEqual("decoded", operand["status"])
+                self.assertEqual("unknown", operand["access"])
+                self.assertEqual("PARTIAL", result["analysis"]["state"])
+
+    def test_oversize_indexed_k_numbers_fail_closed(self) -> None:
+        huge = "9" * 5000
+        for raw in (f"K{huge}Z16", f"K0Z{huge}"):
+            with self.subTest(component="value" if raw.startswith("K9") else "index"):
+                operand = REFERENCE.parse_operand(raw, 0)
+                self.assertEqual(("unknown", "unknown"), (operand["kind"], operand["status"]))
+
     def test_quoted_literal_with_spaces_keeps_raw_operand_and_position(self) -> None:
         text = '"ALPHA BETA" D10'
         self.assertEqual(['"ALPHA BETA"', "D10"], REFERENCE.split_operands(text))

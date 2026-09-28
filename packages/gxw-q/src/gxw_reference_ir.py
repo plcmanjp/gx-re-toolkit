@@ -40,6 +40,10 @@ DEVICE = re.compile(
     r"(?P<address>[0-9A-F]+)(?P<index>ZZ?[0-9]+)?(?:\.(?P<bit>[0-9A-F]+))?$"
 )
 CONSTANT = re.compile(r"^(?P<kind>K|H|E)(?P<value>.+)$")
+CONTROL = re.compile(r"^(?P<kind>N|P)(?P<address>[0-9]+)$")
+INDEXED_K = re.compile(r"^K(?P<value>-?[0-9]+)Z(?P<index>[0-9]+)$")
+_CONTROL_READ_FORMS = frozenset({("N", "MC", 0, 2), ("N", "MCR", 0, 1),
+                                 ("P", "CALL", 0, 1), ("P", "XCALL", 0, 1)})
 
 
 class ReferenceIrError(ValueError):
@@ -94,6 +98,18 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
     }
     if raw_token.startswith('"') and raw_token.endswith('"') and raw_token.count('"') == 2:
         return {**base, "kind": "literal", "status": "decoded"}
+    control = CONTROL.fullmatch(raw_token)
+    if control:
+        return {**base, "kind": "control", "status": "decoded"}
+    indexed_k = INDEXED_K.fullmatch(raw_token)
+    if indexed_k:
+        value = _parse_int(indexed_k.group("value"), 10)
+        index_number = _parse_int(indexed_k.group("index"), 10)
+        if value is None or index_number is None:
+            return base
+        return {**base, "kind": "constant", "status": "decoded",
+                "constant": {"notation": "K", "value": value,
+                             "index": {"kind": "Z", "number": index_number, "access": "read"}}}
     match = DEVICE.fullmatch(raw_token)
     if not match:
         constant = CONSTANT.fullmatch(raw_token)
@@ -143,16 +159,30 @@ def _role(opcode: str, position: int, operand_count: int) -> tuple[str, str]:
     return "write", "DESTINATION_OPERAND_POSITION"
 
 
+def _observed_role(operand: dict[str, Any], opcode: str, operand_count: int) -> tuple[str, str]:
+    role, basis = _role(opcode, operand["position"], operand_count)
+    if operand["kind"] == "control":
+        form = (operand["raw_token"][0], opcode, operand["position"], operand_count)
+        return (("read", "OBSERVED_CONTROL_READ_FORM") if form in _CONTROL_READ_FORMS else
+                ("unknown", "CONTROL_ACCESS_UNVERIFIED"))
+    if (operand["kind"] == "constant" and operand["constant"].get("index") is not None
+            and role in {"write", "both"}):
+        return "unknown", "INDEXED_CONSTANT_WRITE_UNSUPPORTED"
+    return role, basis
+
+
 def _range_width(opcode: str, position: int, operands: list[dict[str, Any]]) -> tuple[str, int | None, str]:
     if opcode in {"BMOV", "BMOVP"} and position in (0, 1):
         count = operands[2] if len(operands) > 2 else None
-        if count and count["kind"] == "constant" and count["constant"]["notation"] == "K":
+        if (count and count["kind"] == "constant" and count["constant"]["notation"] == "K"
+                and count["constant"].get("index") is None):
             value = count["constant"]["value"]
             return ("STATIC", value, "BMOV_K_COUNT") if isinstance(value, int) and value > 0 else ("UNKNOWN", None, "INVALID_COUNT")
         return "DYNAMIC", None, "COUNT_NOT_STATIC_K"
     if opcode in {"FMOV", "FMOVP"} and position == 1:
         count = operands[2] if len(operands) > 2 else None
-        if count and count["kind"] == "constant" and count["constant"]["notation"] == "K":
+        if (count and count["kind"] == "constant" and count["constant"]["notation"] == "K"
+                and count["constant"].get("index") is None):
             value = count["constant"]["value"]
             return ("STATIC", value, "FMOV_K_COUNT") if isinstance(value, int) and value > 0 else ("UNKNOWN", None, "INVALID_COUNT")
         return "DYNAMIC", None, "COUNT_NOT_STATIC_K"
@@ -160,6 +190,9 @@ def _range_width(opcode: str, position: int, operands: list[dict[str, Any]]) -> 
 
 
 def _coverage(operand: dict[str, Any], opcode: str, operands: list[dict[str, Any]]) -> dict[str, Any]:
+    if operand["kind"] == "constant" and operand["constant"].get("index") is not None:
+        return {"state": "DYNAMIC", "word_width": None, "addresses": None,
+                "reason": "INDEXED_CONSTANT_ADDRESS"}
     if operand["kind"] != "device" or operand["status"] != "decoded":
         return {"state": "NOT_APPLICABLE", "word_width": None, "addresses": None, "reason": "NOT_DECODED_DEVICE"}
     device = operand["device"]
@@ -218,7 +251,7 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
             if total_operands > MAX_OPERANDS:
                 raise ReferenceIrError("OPERAND_LIMIT")
             for operand in operands:
-                role, basis = _role(opcode, operand["position"], len(operands))
+                role, basis = _observed_role(operand, opcode, len(operands))
                 operand["access"] = role
                 operand["access_basis"] = basis
                 operand["coverage"] = _coverage(operand, opcode, operands)
