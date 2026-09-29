@@ -48,6 +48,7 @@ XFER_B = {0x00: ("MOV", 2), 0x01: ("DMOV", 2), 0x06: ("BMOV", 3), 0x07: ("FMOV",
 # flag alone is not a PLC-wide subtype specification: the 07 observation is
 # also the legacy value for its fixed nine-byte sample text.
 ISSUE39_NOTE_TYPE = {0x01: "s", 0x07: "i"}
+VERIFIED_ASCII_NOTE_LENGTHS = frozenset(range(1, 33))
 # Source-derived parser observation.
 ARITH_B = {b: ["+", "-", "D+", "D-", "*"][b // 2] for b in range(10)}
 ARITH_B.update({0x1d: "E+", 0x20: "E*", 0x21: "E/"})   # 관찰된 부동소수만(추측 미포함)
@@ -906,8 +907,8 @@ def decode_program(data):
                 and data[k + 5] in (MOD_BIT, MOD_ZINDEX, MOD_UMODULE, MOD_ZINDEX2)):
             start = k
             break
-        # 첫 라인 스테이트먼트도 시작점 후보 (<L> 80 <H=ceil(L/2)> <text> <L>, 첫 LS=[Title])
-        if data[k + 1] == 0x80 and 5 <= data[k] and data[k + 2] == (data[k] + 1) // 2 and data[k + 3] == 0x5b:
+        # A complete leading Statement frame need not begin with a title bracket.
+        if data[k + 1] == 0x80 and 5 <= data[k] and data[k + 2] == (data[k] + 1) // 2:
             L = data[k]
             if (k + 3 + (L - 4) < len(data) and data[k + 3 + (L - 4)] == L
                     and all(0x20 <= c <= 0xff for c in data[k + 3:k + 3 + (L - 4)])):
@@ -1274,13 +1275,15 @@ def pou_rows(b, cmap=None):
     return rows, unk_i, unk_d
 
 
-def typed_note_records(b, cmap=None):
+def typed_note_records(b, cmap=None, *, ascii_types=False):
     """Return observed Note records with raw subtype and preceding instruction.
 
     This is deliberately a verification view, not a new CSV projection model.
     ``pou_rows`` remains the public three-field compatibility API.  The helper
     refuses an unpaired raw/text stream so a caller cannot silently promote a
-    Note when the reader lost an attachment or subtype.
+    Note when the reader lost an attachment or subtype. ``ascii_types`` opts
+    into the independently verified ASCII lengths 1 through 32; the
+    default retains the original SAME TEXT-only subtype observation.
     """
     sec0 = re.split(rb"\x34\x02\x04", b, maxsplit=1)[0]
     raw_notes = []
@@ -1297,15 +1300,18 @@ def typed_note_records(b, cmap=None):
             if 5 <= length and 1 <= text_length and end < n and sec0[end] == length:
                 text = sec0[i + 3:end]
                 if all(0x20 <= byte <= 0xff for byte in text):
-                    # Only the two equal-text Issue #39 A/B frames prove the
-                    # s/i mapping. Legacy Note frames remain readable but
-                    # untyped, so callers cannot silently change their CSV
-                    # Note column representation.
-                    subtype = (
-                        ISSUE39_NOTE_TYPE.get(subtype_byte)
-                        if length == 13 and text == b"SAME TEXT"
-                        else None
-                    )
+                    # Preserve the original equal-text Issue #39 mapping by
+                    # default. The opt-in mapping is limited to independently
+                    # verified ASCII lengths; all other frames stay untyped.
+                    subtype = None
+                    if length == 13 and text == b"SAME TEXT":
+                        subtype = ISSUE39_NOTE_TYPE.get(subtype_byte)
+                    elif (ascii_types and text_length in VERIFIED_ASCII_NOTE_LENGTHS
+                          and all(0x20 <= byte <= 0x7e for byte in text)):
+                        if subtype_byte == 0x01:
+                            subtype = "s"
+                        elif subtype_byte == (length + 1) // 2:
+                            subtype = "i"
                     raw_notes.append({
                         "text": text.decode("cp1252", errors="replace"),
                         "raw_type": f"0x{subtype_byte:02x}",
