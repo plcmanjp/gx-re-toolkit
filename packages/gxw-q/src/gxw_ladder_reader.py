@@ -1016,6 +1016,31 @@ def _decode_socket_command(data, offset):
     return (("SP." + name.decode("ascii"), " ".join(operands)), cursor)
 
 
+def _decode_dfmov(data, offset):
+    """Decode the independently observed non-pulse DFMOV frame atomically."""
+    n = len(data)
+    if (offset + 3 >= n or data[offset:offset + 2] != b"\x05\x4c"
+            or data[offset + 3] != 0x0e):
+        return None
+    unknown = ("<i:05:4c:0e>", "")
+    cursor = offset + 4
+    if (cursor >= n or data[offset + 2] != 0x05 or data[cursor] != 0x05):
+        return unknown, cursor
+    cursor += 1
+    operands = []
+    for _ in range(3):
+        if cursor >= n or not _is_operand_frame(data, cursor, n):
+            return unknown, cursor
+        token, end = _read_operand(data, cursor)
+        if not token or end <= cursor or end > n:
+            return unknown, cursor
+        operands.append(token)
+        cursor = end
+    if cursor < n and _is_operand_frame(data, cursor, n):
+        return unknown, cursor
+    return ("DFMOV", " ".join(operands)), cursor
+
+
 def _decode_pou_text(raw, text_encoding):
     """Decode ANSI POU text without replacing or discarding source bytes.
 
@@ -1042,6 +1067,9 @@ def decode_program(data, *, text_encoding="cp1252"):
     # 단순명령뿐 아니라 비교접점이 첫 rung인 프로젝트도 시작 후보로 인정한다.
     start = 0
     for k in range(len(data) - 5):
+        if data[k:k + 2] == b"\x05\x4c" and data[k + 3] == 0x0e:
+            start = k
+            break
         # Keep a complete contact header even when its operand is damaged.
         # Its mode bytes must not become a synthetic leading NOP instead.
         if (data[k] == 0x04 and data[k + 1] in EDGE04
@@ -1271,6 +1299,11 @@ def decode_program(data, *, text_encoding="cp1252"):
             if dev:
                 out.append(("PLF", dev)); i = j; continue
             # dev 없음 → 폴스루(generic i+=1)
+        dfmov = _decode_dfmov(data, i)
+        if dfmov is not None:
+            row, i = dfmov
+            out.append(row)
+            continue
         if b == 0x05 and data[i + 1] == 0x4c:           # MOV / DMOV / $MOV(문자열)
             # $MOV: 05 4c <A> <0a|03> + 문자열 <f> ee <text> <f> (f=0x03+길이, 프레임-폭) + 디바이스
             # Source-derived parser observation.
