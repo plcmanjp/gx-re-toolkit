@@ -48,6 +48,15 @@ NOTICE와 의존성 고지가 각 배포물에 들어간다. FX5/R의 source com
 
 ## 실행
 
+GXW Python 판독기는 Statement와 Note에 `text_encoding="cp949"` 또는
+`"cp1252"`를 지정할 수 있습니다. 기본값은 엄격한 CP1252입니다. 선택적인
+`"auto"` 정책은 바이트가 왕복 보존되는 CP949를 먼저, 다음으로 CP1252를
+선택합니다. 이는 한국어 Windows 정책이며 원본 코드 페이지의 증명은 아닙니다.
+판독 시 대체 문자로 치환하지 않습니다. counted COMMENT는 UTF-16을 유지합니다.
+`typed_note_records(..., framed_types=True)`는 Note의 바이트 길이 기반 타입,
+원본 바이트와 명령 연결을 제공하여 소비자가 독립적으로 검증할 수 있습니다.
+이 옵션으로 공식 GX 가져오기 성공이 입증되지는 않습니다.
+
 ```powershell
 gx3-fx5-inspect --help
 gx3-r-inspect --help

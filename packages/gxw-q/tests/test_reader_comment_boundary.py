@@ -23,6 +23,118 @@ def _comment(value: str, padding: bytes = b"\0" * 4) -> bytes:
 
 class CommentBoundaryTests(unittest.TestCase):
     @staticmethod
+    def _framed_stream(records, texts):
+        header = bytearray(60)
+        header[:4] = b"\x1a\x00\x08\x01"
+        header[56:58] = b"\x20\x0a"
+        struct.pack_into("<H", header, 58, len(records))
+        directory = b"".join(struct.pack("<HII", *record) for record in records)
+        pool = b"".join(b"\0" * 4 + struct.pack("<I", len(text) + 1)
+                        + text.encode("utf-16le") + b"\0\0" for text in texts)
+        return bytes(header) + directory + pool
+
+    def test_counted_directory_preserves_all_text_without_chain_heuristics(self):
+        records = [(0x90, 0, 2), (0x93, 90000, 1), (0xc8, 70000, 1),
+                   (0xa8a8, 0xffffff + 1, 1), (0xf8ab, (0x12 << 16) | 4, 1)]
+        texts = ["CONTROL", "123", "", "한글\ntext", "word text", "module buffer"]
+        stream = self._framed_stream(records, texts)
+        pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+        self.assertIsNone(warning)
+        self.assertEqual(list(zip(["M0", "M1", "F90000", "ST70000", "D16777216", "U12\\G4"], texts)), pairs)
+        section = reader._structured_comment_section(stream)
+        self.assertEqual(len(stream), section[2])
+        self.assertEqual(50, len(reader._comment_directory_region(stream)))
+        self.assertEqual([device for device, _ in pairs], reader.unified_directory(stream))
+        self.assertEqual([device for device, _ in pairs[:-1]], reader.comment_directory(stream))
+        self.assertEqual(["D16777216"], reader.high_addr_directory(stream))
+        self.assertEqual(["U12\\G4"], reader.ug_directory(stream))
+
+    def test_counted_directory_does_not_scan_text_for_range_records(self):
+        texts = ["alphaÅa", "MODULE123", "short", "later text"]
+        stream = self._framed_stream([(0x90, 100, 4)], texts)
+        pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+        self.assertIsNone(warning)
+        self.assertEqual(list(zip(["M100", "M101", "M102", "M103"], texts)), pairs)
+
+    def test_counted_u_high_code_uses_same_family_table_for_every_directory_api(self):
+        stream = self._framed_stream([(0xd8d8, 0x12, 1)], ["module label"])
+        self.assertEqual(([('U12', 'module label')], None), reader.device_comment_pairs({'synthetic': stream}))
+        for method in (reader.comment_directory, reader.high_addr_directory, reader.unified_directory):
+            self.assertEqual(['U12'], method(stream))
+
+    def test_counted_directory_rejects_unknown_duplicate_and_incomplete_records(self):
+        cases = [self._framed_stream([(0xffff, 0, 1)], ["unknown"]),
+                 self._framed_stream([(0x90, 0, 1), (0x90, 0, 1)], ["one", "two"]),
+                 self._framed_stream([(0x90, 0, 2)], ["one"]),
+                 self._framed_stream([(0x90, 0, 1)], ["one"])[:-1],
+                 self._framed_stream([(0x90, 0, 1)], ["embedded\0null"])]
+        for stream in cases:
+            with self.subTest(length=len(stream)), self.assertRaises(ValueError):
+                reader.device_comment_pairs({"synthetic": stream})
+
+    def test_counted_directory_keeps_resource_budget_independent_of_addresses(self):
+        stream = self._framed_stream([(0x90, 0xffffffff, 2)], ["high", "next"])
+        pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+        self.assertIsNone(warning)
+        self.assertEqual(["M4294967295", "M4294967296"], [device for device, _ in pairs])
+        with mock.patch.object(reader, "MAX_COMMENT_DIRECTORY_ENTRIES", 1), self.assertRaises(ValueError):
+            reader.device_comment_pairs({"synthetic": stream})
+
+    @staticmethod
+    def _bit_section(groups):
+        body = bytearray()
+        for code, module, words in groups:
+            body.extend(struct.pack("<HHI", code, module, len(words)))
+            for address, comments in words:
+                body.extend(struct.pack("<IH", address, len(comments)))
+                for bit, text in comments:
+                    body.extend(struct.pack("<HH", bit, len(text) + 1))
+                    body.extend(text.encode("utf-16le") + b"\0\0")
+        return struct.pack("<IIHH", len(body) + 12, 0, 1, len(groups)) + body
+
+    def test_counted_bit_comments_keep_explicit_family_module_and_address(self):
+        section = self._bit_section([
+            (0xf8ab, 0x12, [(0xffffffff, [(0, "buffer bit"), (15, "last bit")])]),
+            (0xa8, 0, [(123456, [(3, "word bit")])]),
+            (0xa9, 0, [(70000, [(4, "system bit")])]),
+            (0xb4, 0, [(0xabc, [(5, "link bit")])]),
+        ])
+        expected = [("U12\\G4294967295.0", "buffer bit"),
+                    ("U12\\G4294967295.F", "last bit"),
+                    ("D123456.3", "word bit"), ("SD70000.4", "system bit"),
+                    ("W0ABC.5", "link bit")]
+        self.assertEqual(expected, reader._structured_bit_comment_pairs(section))
+        stream = self._framed_stream([(0x90, 0, 1)], ["normal"]) + section
+        self.assertEqual(([("M0", "normal")] + expected, None),
+                         reader.device_comment_pairs({"synthetic": stream}))
+
+    def test_counted_bit_comments_reject_partial_duplicate_unknown_and_trailing_data(self):
+        valid = self._bit_section([(0xf8ab, 7, [(123, [(1, "one")])])])
+        cases = [valid[:-1], valid + b"extra",
+                 self._bit_section([(0xffff, 0, [(1, [(0, "bad")])])]),
+                 self._bit_section([(0xa8, 7, [(1, [(0, "bad")])])]),
+                 self._bit_section([(0xa8, 0, [(1, [(0, "one"), (0, "two")])])]),
+                 self._bit_section([(0xa8, 0, [(1, [(16, "bad")])])]),
+                 self._bit_section([(0xa8, 0, [(1, [(0, "embedded\0null")])])])]
+        for section in cases:
+            with self.subTest(length=len(section)), self.assertRaises(ValueError):
+                reader._structured_bit_comment_pairs(section)
+
+    def test_counted_normal_and_bit_comments_share_total_budget(self):
+        stream = (self._framed_stream([(0x90, 0, 1)], ["normal"])
+                  + self._bit_section([(0xa8, 0, [(1, [(0, "bit")])])]))
+        with mock.patch.object(reader, "MAX_COMMENT_DIRECTORY_ENTRIES", 1), self.assertRaisesRegex(ValueError, "entry budget"):
+            reader.device_comment_pairs({"synthetic": stream})
+
+    def test_counted_bit_only_and_empty_streams_do_not_use_legacy_fallback(self):
+        empty = self._framed_stream([], [])
+        bits = self._bit_section([(0xa8, 0, [(1, [(0, "one")])])])
+        self.assertEqual(([("D1.0", "one")], None), reader.device_comment_pairs({"synthetic": empty + bits}))
+        self.assertEqual(([], None), reader.device_comment_pairs({"synthetic": empty}))
+        with self.assertRaises(ValueError):
+            reader.device_comment_pairs({"synthetic": empty + bits[:-1]})
+
+    @staticmethod
     def _split_stream(*, second_count: int = 30, duplicate: bool = False,
                       gap: bytes | None = None) -> bytes:
         second_start = 0 if duplicate else 30
