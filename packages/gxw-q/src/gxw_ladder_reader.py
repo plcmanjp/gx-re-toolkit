@@ -1042,6 +1042,12 @@ def decode_program(data, *, text_encoding="cp1252"):
     # 단순명령뿐 아니라 비교접점이 첫 rung인 프로젝트도 시작 후보로 인정한다.
     start = 0
     for k in range(len(data) - 5):
+        # Keep a complete contact header even when its operand is damaged.
+        # Its mode bytes must not become a synthetic leading NOP instead.
+        if (data[k] == 0x04 and data[k + 1] in EDGE04
+                and data[k + 2] in (0x02, 0x03, 0x04) and data[k + 3] == 0x04):
+            start = k
+            break
         if (data[k] == 0x04 and data[k + 1] in INSTR
                 and data[k + 2] in (0x02, 0x03) and data[k + 3] == 0x04
                 and _is_operand_frame(data, k + 4, len(data))):
