@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -28,15 +29,15 @@ MAX_OCCURRENCES = 1_000_000
 MAX_OPERANDS = 5_000_000
 MAX_TOTAL_COVERED_ADDRESSES = 1_000_000
 MAX_COVERED_ADDRESSES = 4096
-HEX_FAMILIES = {"X", "Y", "B", "W", "SB", "SW"}
-BIT_FAMILIES = {"X", "Y", "M", "L", "F", "B", "SM", "SB", "T", "C"}
+HEX_FAMILIES = {"X", "Y", "DY", "B", "W", "SB", "SW"}
+BIT_FAMILIES = {"X", "Y", "DY", "M", "L", "F", "B", "SM", "SB", "T", "ST", "C"}
 RMW_DEST = {"INC", "INCP", "DINC", "DINCP", "DEC", "DECP", "DDEC", "DDECP",
             "DNEG", "SFL", "SFR", "SFT", "SFTP", "BSFL", "BSFR"}
 DOUBLE_WORD = {"DMOV", "DMOVP", "D+", "D-", "D*", "D/", "DAND", "DOR", "DXOR",
                "DINC", "DINCP", "DDEC", "DDECP", "DNEG"}
 DEVICE = re.compile(
-    r"^(?P<indirect>@)?(?:(?P<digit>K[1-8]))?(?:U(?P<module>[0-9]+)\\)?"
-    r"(?P<family>ZR|SM|SD|FD|SB|SW|X|Y|M|L|F|B|D|R|W|T|C|Z|G)"
+    r"^(?P<indirect>@)?(?:(?P<digit>K[1-8]))?(?:U(?P<module>[0-9A-F]+)\\)?"
+    r"(?P<family>ZR|SM|SD|FD|SB|SW|ST|DY|X|Y|M|L|F|B|D|R|W|T|C|Z|G)"
     r"(?P<address>[0-9A-F]+)(?P<index>ZZ?[0-9]+)?(?:\.(?P<bit>[0-9A-F]+))?$"
 )
 CONSTANT = re.compile(r"^(?P<kind>K|H|E)(?P<value>.+)$")
@@ -119,6 +120,16 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
         if constant:
             radix = 16 if constant.group("kind") == "H" else 10
             value = _parse_int(constant.group("value"), radix)
+            if constant.group("kind") == "E":
+                try:
+                    spelling = constant.group("value")
+                    if re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", spelling) is None:
+                        raise ValueError("invalid floating constant spelling")
+                    value = float(spelling)
+                    if not math.isfinite(value):
+                        value = None
+                except ValueError:
+                    value = None
             return {**base, "kind": "constant", "status": "decoded" if value is not None else "unknown",
                     "constant": {"notation": constant.group("kind"), "value": value}}
         return base
@@ -136,7 +147,7 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
         "address_text": match.group("address"),
         "address": address,
         "display_radix": radix,
-        "module": int(match.group("module")) if match.group("module") is not None else None,
+        "module": int(match.group("module"), 16) if match.group("module") is not None else None,
         "word_bit": bit,
         "index": index,
         "indirect": match.group("indirect") is not None,
@@ -296,7 +307,7 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
     }
 
 
-def build(path: Path) -> dict[str, Any]:
+def build(path: Path, *, text_encoding: str = "cp1252") -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
         raise ReferenceIrError("INPUT_NOT_REGULAR_FILE")
     if path.stat().st_size > MAX_INPUT_BYTES:
@@ -314,7 +325,7 @@ def build(path: Path) -> dict[str, Any]:
     for name in ordered_names:
         source_store, body, _score = pous[name]
         sec0 = re.split(rb"\x34\x02\x04", body, maxsplit=1)[0]
-        rows, _unknown_i, _unknown_d = reader.pou_rows(body, cmap)
+        rows, _unknown_i, _unknown_d = reader.pou_rows(body, cmap, text_encoding=text_encoding)
         source_pous.append({"name": name, "source_store": source_store, "order_basis": order_basis,
                             "source_digest": _sha256(sec0), "rows": rows})
     after = path.read_bytes()

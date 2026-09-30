@@ -50,6 +50,15 @@ distribution SHA-256 hashes.
 
 ## Usage
 
+The GXW Python reader accepts `text_encoding="cp949"` or `"cp1252"` for
+source Statement and Note frames. The default is strict CP1252. The optional
+`"auto"` policy prefers reversible CP949 and then reversible CP1252; it is a
+Korean Windows policy, not proof of a project's original code page. Decoding
+never substitutes replacement characters. Counted COMMENT text remains
+UTF-16. `typed_note_records(..., framed_types=True)` exposes the byte-length
+Note subtype relation, raw bytes and instruction attachment for independent
+binding checks. These options do not establish an official GX import result.
+
 ```powershell
 gx3-fx5-inspect --help
 gx3-r-inspect --help

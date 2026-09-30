@@ -5,6 +5,8 @@ import sys, os, re, struct, tempfile
 from pathlib import Path
 import gxw_bounded_ole as bounded_ole
 
+POU_TEXT_ENCODING_API = 1
+
 # Source-derived parser observation.
 INSTR = {
     0x00: "LD", 0x01: "LDI", 0x06: "OR", 0x07: "ORI", 0x0c: "AND", 0x0d: "ANI",
@@ -14,17 +16,19 @@ INSTR = {
 # 연결명령(03 TT 03, 피연산자 없음)
 INSTR_NOOP = {
     0x19: "ANB", 0x14: "INV", 0x1a: "MPS", 0x1b: "MRD", 0x1c: "MPP",
-    0x12: "MEP", 0x13: "MEF", 0x18: "ORB", 0x33: "FEND",
+    0x12: "MEP", 0x13: "MEF", 0x18: "ORB", 0x33: "FEND", 0x38: "NOPLF",
 }
 # Source-derived parser observation.
 DEVICE = {
     0x9c: ("X", 16), 0x9d: ("Y", 16), 0x90: ("M", 10),
     0xc2: ("T", 10), 0xc5: ("C", 10), 0xa8: ("D", 10), 0xaf: ("R", 10),
+    0xc8: ("ST", 10),  # Retentive-timer current value device code (STN/SN).
     0x91: ("SM", 10),   # 특수릴레이 (2바이트 주소, test-1 SM400)
     0x92: ("L", 10),    # 래치릴레이
     0x93: ("F", 10),    # Source-derived parser observation.
     0xa1: ("SB", 16),   # Issue49 Q06UDV A/B: 48 Kn operands per variant
     0xa0: ("B", 16),    # Source-derived parser observation.
+    0xa3: ("DY", 16),   # Direct output, including an independently framed Z index.
     0xb0: ("ZR", 10),   # 파일레지스터(연속 ZR, 3바이트 주소까지)
     0xb4: ("W", 16),    # Source-derived parser observation.
     0xcc: ("Z", 10),    # 인덱스 레지스터
@@ -875,9 +879,14 @@ def _scan_to_operand(data, i, n, window=6):
         if _is_operand_frame(data, p, n):
             return p
         if ((data[p] == 0x03 and p + 2 < n and data[p + 2] == 0x03)          # 03 TT 03
+                or data[p:p + 2] == b"\x02\x02"
                 or (data[p] == 0x05 and p + 1 < n and 0x40 <= data[p + 1] <= 0x7f)  # Source-derived parser observation.
-                or (data[p] == 0x06 and p + 1 < n and data[p + 1] == 0x40)    # 비교
-                or (data[p] == 0x04 and p + 2 < n and data[p + 1] in INSTR and data[p + 2] == 0x02)  # 수식자 접점
+                or (data[p] == 0x06 and p + 1 < n and 0x40 <= data[p + 1] <= 0x7f)
+                or (p + 3 < n and data[p + 1] in (0x80, 0x82)
+                    and data[p] >= 5)
+                or (data[p] == 0x04 and p + 3 < n
+                    and data[p + 1] in (set(INSTR) | set(EDGE04) | set(SPECIAL04) | {0x21, 0x22})
+                    and data[p + 2] in (0x02, 0x03, 0x04, 0x05) and data[p + 3] == 0x04)
                 or data[p] in (0x21, 0x25)):                                  # Source-derived parser observation.
             return -1
         p += 1
@@ -899,7 +908,7 @@ def _format_base(tc, val, w):
     if tc == 0xec:                                   # E 부동소수 상수 (4바이트 IEEE LE)
         fv = struct.unpack("<f", int(val).to_bytes(4, "little"))[0]
         return f"E{fv:g}"
-    if tc in DEVICE and tc != 0xa1:
+    if tc in DEVICE:
         nm, radix = DEVICE[tc]
         return f"{nm}{_cmt_hex(val)}" if radix == 16 else f"{nm}{val}"
     return f"<dev:{tc:02x}>{val}"
@@ -930,13 +939,9 @@ def _read_operand(data, i):
                     bit = val; i = nxt; continue
                 if tc == MOD_DIGIT:                   # 디지트 지정 KnXXX (베이스 앞)
                     digit = val; i = nxt; continue
-                if tc == 0xa1 and (w != 2 or digit not in range(1, 9)
-                        or not 256 <= val or val + 4 * digit - 1 > 2047
-                        or any(mod is not None for mod in (u_num, z_idx, z_idx2, bit))):
-                    return f"<dev:{tc:02x}>{val}", nxt
-                s = f"SB{_cmt_hex(val)}" if tc == 0xa1 else _format_base(tc, val, w)          # 베이스 도달 → 조립
+                s = _format_base(tc, val, w)          # 베이스 도달 → 조립
                 if u_num is not None:
-                    s = f"U{u_num}\\{s}"
+                    s = f"U{_cmt_hex(u_num)}\\{s}"
                 if z_idx is not None:
                     s = f"{s}Z{z_idx}"
                 if z_idx2 is not None:
@@ -1011,12 +1016,44 @@ def _decode_socket_command(data, offset):
     return (("SP." + name.decode("ascii"), " ".join(operands)), cursor)
 
 
-def decode_program(data):
+def _decode_pou_text(raw, text_encoding):
+    """Decode ANSI POU text without replacing or discarding source bytes.
+
+    ``auto`` is a Korean Windows policy, not encoding detection: prefer a
+    strict, reversible CP949 decoding, then strict CP1252. Callers may select
+    the source code page explicitly. COMMENT text uses its own UTF-16 framing.
+    """
+    if text_encoding not in {"auto", "cp949", "cp1252"}:
+        raise ValueError("unsupported POU text encoding")
+    candidates = ("cp949", "cp1252") if text_encoding == "auto" else (text_encoding,)
+    for encoding in candidates:
+        try:
+            text = raw.decode(encoding)
+            if text.encode(encoding) == raw:
+                return text
+        except UnicodeError:
+            pass
+    raise ValueError("POU text cannot round-trip through the selected source code page")
+
+
+def decode_program(data, *, text_encoding="cp1252"):
     'POU 본체 sec0를 IL 순서대로 디코드 - 접점/코일/연결/응용/타이머 카운터/MOV.'
     # Source-derived parser observation.
     # 단순명령뿐 아니라 비교접점이 첫 rung인 프로젝트도 시작 후보로 인정한다.
     start = 0
     for k in range(len(data) - 5):
+        if (data[k] == 0x04 and data[k + 1] in INSTR
+                and data[k + 2] in (0x02, 0x03) and data[k + 3] == 0x04
+                and _is_operand_frame(data, k + 4, len(data))):
+            start = k
+            break
+        if (data[k:k + 2] == b"\x02\x02"
+                or (data[k] == 0x03 and data[k + 1] in INSTR_NOOP and data[k + 2] == 0x03)
+                or (data[k:k + 2] == b"\x06\x49" and k + 6 < len(data)
+                    and data[k + 2] == 0x04 and data[k + 3] in (0x01, 0x03) and data[k + 4:k + 6] == b"\x02\x06"
+                    and _is_operand_frame(data, k + 6, len(data)))):
+            start = k
+            break
         socket = _decode_socket_command(data, k)
         if socket is not None and socket[0][0].startswith("SP.SOC"):
             start = k
@@ -1032,7 +1069,7 @@ def decode_program(data):
             start = k
             break
         if (data[k] == 0x03 and data[k + 2] == 0x03 and data[k + 1] in INSTR
-                and data[k + 3] in (0x04, 0x05) and data[k + 4] in DEVICE):
+                and _is_operand_frame(data, k + 3, len(data))):
             start = k
             break
         # A leading EDGE04 contact is an IL start only with an observed 02
@@ -1077,7 +1114,7 @@ def decode_program(data):
             if 5 <= L and 1 <= tl and i + 3 + tl < n and data[i + 3 + tl] == L:
                 txt = data[i + 3:i + 3 + tl]
                 if all(0x20 <= c <= 0xff for c in txt):
-                    out.append(("__STMT__", txt.decode("cp1252", errors="replace")))
+                    out.append(("__STMT__", _decode_pou_text(txt, text_encoding)))
                     i += 3 + tl + 1
                     continue
         # Note frame accepts the established length relation and the isolated
@@ -1090,7 +1127,7 @@ def decode_program(data):
             if 5 <= L and 1 <= tl and i + 3 + tl < n and data[i + 3 + tl] == L:
                 txt = data[i + 3:i + 3 + tl]
                 if all(0x20 <= c <= 0xff for c in txt):
-                    out.append(("__NOTE__", txt.decode("cp1252", errors="replace")))
+                    out.append(("__NOTE__", _decode_pou_text(txt, text_encoding)))
                     i += 3 + tl + 1
                     continue
         # 통신/지능형 명령 <L> <71|72> <3B> <ASCII (L-6)자> <L> + 오퍼랜드 (ZP.BUFSND/GP.OUTPUT/G.INPUT 등)
@@ -1151,7 +1188,7 @@ def decode_program(data):
         # Source-derived parser observation.
         # Source-derived parser observation.
         if (b == 0x04 and i + 5 < n and data[i + 1] in INSTR and data[i + 2] in (0x02, 0x03)
-                and data[i + 3] == 0x04 and data[i + 4] == 0x04
+                and data[i + 3] == 0x04 and _is_operand_frame(data, i + 4, n)
                 and data[i + 5] in DEVICE):
             op = data[i + 1]; i += 4
             dev, i = _read_operand(data, i)
@@ -1183,6 +1220,8 @@ def decode_program(data):
                     continue
             out.append((mnem, dev or ""))
             continue
+        if data[i:i + 2] == b"\x02\x02":
+            out.append(("NOP", "")); i += 2; continue
         if b == 0x04:
             i += 1; continue
         if b == 0x03 and data[i + 2] == 0x03:          # 03 TT 03
@@ -1305,6 +1344,22 @@ def decode_program(data):
             else:
                 out.append((mnem, ""))
             continue
+        # Pulse arithmetic has its own complete six-byte header. The final
+        # mode byte is retained as a framing check, not consumed as an operand.
+        if (b == 0x06 and i + 5 < n and data[i + 1] == 0x49
+                and data[i + 3] in (0x01, 0x03) and data[i + 4:i + 6] == b"\x02\x06"
+                and data[i + 2] == 0x04):
+            mnem = "+P" if data[i + 3] == 0x01 else "-P"
+            i += 6
+            ops = []
+            for _ in range(3):
+                p = _scan_to_operand(data, i, n)
+                if p < 0:
+                    break
+                operand, i = _read_operand(data, p)
+                ops.append(operand or "")
+            out.append((mnem if len(ops) == 3 else "<i:06:49:operand>", " ".join(ops)))
+            continue
         if b == 0x06 and data[i + 1] == 0x40:           # 비교접점 06 40 [W] op conn 06 + 2오퍼랜드
             # 닫는 06 = conn(10/11/12) 직후 (op바이트 0x06[D=]에서 조기종료 방지)
             j = i + 2
@@ -1402,12 +1457,12 @@ def is_pou_body(b, registry_names=None):
     return (registry_names is None) or (nm in registry_names)
 
 
-def pou_rows(b, cmap=None):
+def pou_rows(b, cmap=None, *, text_encoding="cp1252"):
     'POU 본체 sec0 → [(instr, operand, comment)] 구조화 행 + 미확인 토큰. 텍스트 CSV 공용.'
     cmap = cmap or {}
     sec0 = re.split(rb"\x34\x02\x04", b)[0]
     rows, unk_i, unk_d = [], set(), set()
-    for instr, dev in decode_program(sec0):
+    for instr, dev in decode_program(sec0, text_encoding=text_encoding):
         first = dev.split()[0] if dev else ""
         rows.append((instr, dev, cmap.get(first, "")))
         if instr.startswith("<i:"):
@@ -1419,7 +1474,8 @@ def pou_rows(b, cmap=None):
     return rows, unk_i, unk_d
 
 
-def typed_note_records(b, cmap=None, *, ascii_types=False):
+def typed_note_records(b, cmap=None, *, ascii_types=False, framed_types=False,
+                       text_encoding="cp1252"):
     """Return observed Note records with raw subtype and preceding instruction.
 
     This is deliberately a verification view, not a new CSV projection model.
@@ -1428,6 +1484,9 @@ def typed_note_records(b, cmap=None, *, ascii_types=False):
     Note when the reader lost an attachment or subtype. ``ascii_types`` opts
     into the independently verified ASCII lengths 1 through 32; the
     default retains the original SAME TEXT-only subtype observation.
+    ``framed_types`` opts into the raw-01/byte-length subtype relation for
+    other printable source text; encoded length and raw text remain available
+    for a caller's independent binding check. It does not validate GX import.
     """
     sec0 = re.split(rb"\x34\x02\x04", b, maxsplit=1)[0]
     raw_notes = []
@@ -1450,6 +1509,8 @@ def typed_note_records(b, cmap=None, *, ascii_types=False):
                     subtype = None
                     if length == 13 and text == b"SAME TEXT":
                         subtype = ISSUE39_NOTE_TYPE.get(subtype_byte)
+                    elif framed_types:
+                        subtype = "s" if subtype_byte == 0x01 else "i"
                     elif (ascii_types and text_length in VERIFIED_ASCII_NOTE_LENGTHS
                           and all(0x20 <= byte <= 0x7e for byte in text)):
                         if subtype_byte == 0x01:
@@ -1457,7 +1518,9 @@ def typed_note_records(b, cmap=None, *, ascii_types=False):
                         elif subtype_byte == (length + 1) // 2:
                             subtype = "i"
                     raw_notes.append({
-                        "text": text.decode("cp1252", errors="replace"),
+                        "text": _decode_pou_text(text, text_encoding),
+                        "encoded_length": text_length,
+                        "raw_text_hex": text.hex(),
                         "raw_type": f"0x{subtype_byte:02x}",
                         "subtype": subtype,
                         "offset": i,
@@ -1466,7 +1529,7 @@ def typed_note_records(b, cmap=None, *, ascii_types=False):
                     continue
         i += 1
 
-    rows, _, _ = pou_rows(b, cmap)
+    rows, _, _ = pou_rows(b, cmap, text_encoding=text_encoding)
     note_indexes = [index for index, row in enumerate(rows) if row[0] == "__NOTE__"]
     if len(raw_notes) != len(note_indexes):
         raise ValueError(
@@ -1489,6 +1552,8 @@ def typed_note_records(b, cmap=None, *, ascii_types=False):
             raise ValueError("typed Note has no preceding instruction attachment")
         result.append({
             "text": raw["text"],
+            "encoded_length": raw["encoded_length"],
+            "raw_text_hex": raw["raw_text_hex"],
             "raw_type": raw["raw_type"],
             "subtype": raw["subtype"],
             "attachment": attachment,
