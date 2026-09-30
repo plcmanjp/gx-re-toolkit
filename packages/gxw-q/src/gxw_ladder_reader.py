@@ -220,8 +220,10 @@ CMT_DIR_DEVICE = {
     0xb0: ("ZR", 10), 0xb4: ("W", 16),
     0xc2: ("T", 10), 0xc5: ("C", 10), 0x91: ("SM", 10), 0xa9: ("SD", 10),
     0xd0: ("P", 10),
+    0x93: ("F", 10), 0xc8: ("ST", 10), 0xcc: ("Z", 10),
 }
 MAX_COMMENT_DIRECTORY_ENTRIES = 100_000
+_COUNTED_COMMENT_DEVICE = {**CMT_DIR_DEVICE, 0xd8: ("U", 16)}
 
 
 def _cmt_hex(a):
@@ -239,12 +241,126 @@ def _append_comment_run(devs, name, radix, addr, count):
 
 
 def _comment_directory_region(data):
+    section = _structured_comment_section(data)
+    if section is not None:
+        return data[60:section[0]]
     start, comments = _longest_comment_run(data)
-    return data[:start] if len(comments) >= 2 else data
+    if len(comments) < 2:
+        return data
+    spans = _comment_chain_spans(data)
+    return data[:min(start, spans[0][0])] if spans else data[:start]
+
+
+def _structured_comment_section(data):
+    """Decode a counted 10-byte directory and its length-delimited text pool.
+
+    The framed format has a 60-byte header, a uint16 record count at offset
+    58, and a 20 0a directory marker. Each text has a zero uint32 prefix,
+    a uint32 UTF-16 character count including its terminator, and that text.
+    Unknown types, duplicate addresses and truncated records are errors;
+    uppercase, numeric and empty comments are ordinary source text.
+    Returns (directory_end, pairs, text_end), or None for another format.
+    """
+    if len(data) < 60 or data[:4] != b"\x1a\x00\x08\x01" or data[56:58] != b"\x20\x0a":
+        return None
+    record_count = struct.unpack_from("<H", data, 58)[0]
+    directory_end = 60 + 10 * record_count
+    if directory_end > len(data):
+        raise ValueError("truncated counted comment directory")
+    devices = []
+    for pos in range(60, directory_end, 10):
+        code, address, count = struct.unpack_from("<HII", data, pos)
+        if not 1 <= count <= MAX_COMMENT_DIRECTORY_ENTRIES:
+            raise ValueError("invalid counted comment range")
+        if code == 0xf8ab:
+            base, module = address & 0xffff, address >> 16
+            _append_comment_run(devices, f"U{_cmt_hex(module)}\\G", 10, base, count)
+            continue
+        low, high = code & 0xff, code >> 8
+        info = (_COUNTED_COMMENT_DEVICE.get(low)
+                if high in (0, low) else None)
+        if info is None:
+            raise ValueError(f"unknown counted comment device: {code:04x}")
+        name, radix = info
+        _append_comment_run(devices, name, radix, address, count)
+    if len(devices) != len(set(devices)):
+        raise ValueError("duplicate counted comment address")
+    pos, pairs = directory_end, []
+    for device in devices:
+        if pos + 8 > len(data):
+            raise ValueError("truncated counted comment prefix")
+        flags, length = struct.unpack_from("<II", data, pos)
+        end = pos + 8 + 2 * length
+        if flags != 0 or length < 1 or end > len(data) or data[end - 2:end] != b"\0\0":
+            raise ValueError("invalid counted comment text")
+        try:
+            text = data[pos + 8:end - 2].decode("utf-16le")
+        except UnicodeError as error:
+            raise ValueError("invalid counted comment unicode") from error
+        if "\0" in text:
+            raise ValueError("embedded counted comment terminator")
+        pairs.append((device, text))
+        pos = end
+    return directory_end, pairs, pos
+
+
+def _structured_bit_comment_pairs(data):
+    """Decode the counted typed word-bit section without guessing a module."""
+    if not data:
+        return []
+    if len(data) < 12:
+        raise ValueError("truncated counted bit comment header")
+    size, reserved, version, groups = struct.unpack_from("<IIHH", data)
+    if size != len(data) or reserved != 0 or version != 1:
+        raise ValueError("invalid counted bit comment header")
+    pos, pairs = 12, []
+    for _group in range(groups):
+        if pos + 8 > len(data):
+            raise ValueError("truncated counted bit comment group")
+        code, module, words = struct.unpack_from("<HHI", data, pos)
+        pos += 8
+        if code == 0xf8ab:
+            name, radix = f"U{_cmt_hex(module)}\\G", 10
+        elif module == 0 and code in CMT_DIR_DEVICE and CMT_DIR_DEVICE[code][0] in {"D", "R", "ZR", "W", "SD"}:
+            name, radix = CMT_DIR_DEVICE[code]
+        else:
+            raise ValueError("unknown counted bit comment device")
+        if not 1 <= words <= MAX_COMMENT_DIRECTORY_ENTRIES:
+            raise ValueError("invalid counted bit comment word count")
+        for _word in range(words):
+            if pos + 6 > len(data):
+                raise ValueError("truncated counted bit comment word")
+            address, count = struct.unpack_from("<IH", data, pos)
+            pos += 6
+            if not 1 <= count <= 16 or len(pairs) + count > MAX_COMMENT_DIRECTORY_ENTRIES:
+                raise ValueError("invalid counted bit comment count")
+            word = f"{name}{_cmt_hex(address)}" if radix == 16 else f"{name}{address}"
+            for _bit in range(count):
+                if pos + 4 > len(data):
+                    raise ValueError("truncated counted bit comment text")
+                bit, length = struct.unpack_from("<HH", data, pos)
+                pos += 4
+                end = pos + 2 * length
+                if bit > 15 or length < 1 or end > len(data) or data[end - 2:end] != b"\0\0":
+                    raise ValueError("invalid counted bit comment text")
+                try:
+                    text = data[pos:end - 2].decode("utf-16le")
+                except UnicodeError as error:
+                    raise ValueError("invalid counted bit comment unicode") from error
+                if "\0" in text:
+                    raise ValueError("embedded counted bit comment terminator")
+                pairs.append((f"{word}.{bit:X}", text))
+                pos = end
+    if pos != len(data) or len(set(device for device, _ in pairs)) != len(pairs):
+        raise ValueError("invalid counted bit comment coverage")
+    return pairs
 
 
 def comment_directory(data):
     '1차 range-run 디렉토리: <code:1><00><addr:2 LE><00 00><count:4 LE> (10B).\n    CMT_DIR_DEVICE의 타입을 코멘트 본문 시작 전 구간에서만 스캔한다.'
+    section = _structured_comment_section(data)
+    if section is not None:
+        return [device for device, _ in section[1] if "\\" not in device]
     data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
@@ -265,6 +381,15 @@ def comment_directory(data):
 
 def high_addr_directory(data):
     '2차 고주소 디렉토리(파일레지스터 등): <addr:4 LE><count:4 LE><typecode×2> (10B).\n    판별자 = typecode 2회 반복(D=a8 a8 ZR=b0 b0). 1차(1B code+2B addr)와 구분.\n    + 청크끝 마커 보정(작업67 phase2): 정상 code×2 엔트리 직후 <…><code8><00>(직전타입 code 누설\n    + addr=직전+stride count동일) 마커를 직전 타입 1개로 흡수(스캔 커서는 정상엔트리 다음=i+10).'
+    section = _structured_comment_section(data)
+    if section is not None:
+        devices = []
+        for pos in range(60, section[0], 10):
+            code, address, count = struct.unpack_from("<HII", data, pos)
+            if code >> 8 == code & 0xff:
+                name, radix = _COUNTED_COMMENT_DEVICE[code & 0xff]
+                _append_comment_run(devices, name, radix, address, count)
+        return devices
     data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
@@ -296,6 +421,9 @@ def high_addr_directory(data):
 
 def ug_directory(data):
     '3차 U\\G(지능형모듈 버퍼) 디렉토리: `ab f8 <addr:2 LE><module:2 LE><count:4 LE>` (10B).\n    ab=G 디바이스 코드 f8=U-모듈 수식자(MOD_UMODULE 동일 상수). addr **십진** 전개 module 16진\n    패딩 → `U{module}\\G{addr+k}`. 100 작업63 q1 RE(precision 100% / recall ~96%, 비트지정 제외).'
+    section = _structured_comment_section(data)
+    if section is not None:
+        return [device for device, _ in section[1] if "\\" in device]
     data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
@@ -359,6 +487,9 @@ def ug_bit_directory(data):
 
 def unified_directory(data):
     '1 2 3차 디렉토리를 offset순 단일 스캔으로 통합 전개한다. 코멘트 본문 시작 전\n    매 위치 i마다 (1) 3차 ab f8 → (2) 1차 range-run → (3) 2차 고주소+마커보정 순으로 시도.'
+    section = _structured_comment_section(data)
+    if section is not None:
+        return [device for device, _ in section[1]]
     data = _comment_directory_region(data)
     devs = []
     i, end = 0, len(data) - 10
@@ -645,6 +776,19 @@ def bind_bidirectional(unified, chains):
 
 def device_comment_pairs(streams):
     '전 서브스트림에서 (device, comment) user 쌍 - best-stream(최장 코멘트블록) 선택 +\n    N==M 단조 zip / N!=M 통합 디렉토리 재등록 + 양방향 부분복구.\n    100 GxwCommentExtractor.extract() 포팅. 4차 비트지정 U\\G(`ug_bit_directory`)는\n    위치기반 zip과 독립적(자기서술적 addr+text)이라 별도 스캔 후 합산한다.\n    반환 (pairs, warning).'
+    framed = None
+    for body in streams.values():
+        section = _structured_comment_section(body)
+        if section is not None:
+            pairs = section[1] + _structured_bit_comment_pairs(body[section[2]:])
+            if len(pairs) > MAX_COMMENT_DIRECTORY_ENTRIES:
+                raise ValueError("comment directory exceeds entry budget")
+            if len(set(device for device, _ in pairs)) != len(pairs):
+                raise ValueError("duplicate counted comment address")
+            if framed is None or len(pairs) > len(framed):
+                framed = pairs
+    if framed is not None:
+        return framed, None
     best_c, best_d, best_b = [], [], None
     for num, b in streams.items():
         c = longest_comment_block(b)
