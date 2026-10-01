@@ -15,6 +15,51 @@ def text_frame(text, marker, encoding="cp949", subtype=None):
 
 
 class SourcePouTextTests(unittest.TestCase):
+    def test_buffer_transfer_exact_modes_and_four_operands(self):
+        operands = bytes.fromhex("04 ea 06 04 05 ea 00 06 05 05 a8 bc 02 05 04 e8 14 04")
+        for header, opcode in (("05 56 05 00 05", "FROM"),
+                               ("06 56 06 00 02 06", "FROMP"),
+                               ("06 56 06 02 02 06", "TOP")):
+            command = bytes.fromhex(header) + operands
+            for prefix in (b"", LD):
+                rows, unknown_i, unknown_d = reader.pou_rows(prefix + command + LD)
+                index = bool(prefix)
+                self.assertEqual((opcode, "H6 H600 D700 K20", ""), rows[index])
+                self.assertEqual(("LD", "M0", ""), rows[index + 1])
+                self.assertFalse(unknown_i or unknown_d)
+
+    def test_buffer_transfer_rejects_header_short_extra_and_unknown_operand(self):
+        header = bytes.fromhex("06 56 06 00 02 06")
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        cases = [bytes.fromhex("06 56 06 00 03 06") + operands,
+                 bytes.fromhex("05 56 05 02 05") + operands,
+                 header + operands[:-4], header + operands + bytes.fromhex("04 e8 02 04"),
+                 header + operands + bytes.fromhex("04 ff 01 04"),
+                 header + operands + bytes.fromhex("05 a8 01"),
+                 header + operands.replace(bytes.fromhex("05 a8"), bytes.fromhex("05 ff"))]
+        for command in cases:
+            rows, unknown_i, _ = reader.pou_rows(LD + command + LD)
+            self.assertIn("<i:56:buffer-transfer>", unknown_i)
+            self.assertNotIn("FROMP", [row[0] for row in rows])
+            self.assertEqual(("LD", "M0", ""), rows[-2])
+
+    def test_buffer_transfer_eof_and_leading_malformed_keep_coverage(self):
+        header = bytes.fromhex("06 56 06 00 02 06")
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        self.assertEqual(("FROMP", "H6 H0A8 D890 K1", ""), reader.pou_rows(header + operands)[0][0])
+        for cut in range(2, len(header + operands)):
+            command = (header + operands)[:cut]
+            rows, unknown_i, _ = reader.pou_rows(command + LD)
+            self.assertIn("<i:56:buffer-transfer>", unknown_i, cut)
+            self.assertEqual(("LD", "M0", ""), rows[-2], cut)
+            if cut >= 3:
+                reader.pou_rows(command)  # Truncated EOF must never raise.
+
+        coil = bytes.fromhex("04 20 02 04 04 90 00 04")
+        rows, unknown_i, _ = reader.pou_rows(LD + header + operands[:-4] + bytes.fromhex("04 f0 06 04") + coil)
+        self.assertIn("<i:56:buffer-transfer>", unknown_i)
+        self.assertIn(("OUT", "M0", ""), rows)
+
     def test_unicode_and_byte_length_note_binding(self):
         text = "설비 준비"
         for subtype, expected in ((1, "s"), ((len(text.encode('cp949')) + 5) // 2, "i")):

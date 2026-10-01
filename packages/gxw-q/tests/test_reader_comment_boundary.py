@@ -56,6 +56,17 @@ class CommentBoundaryTests(unittest.TestCase):
         self.assertIsNone(warning)
         self.assertEqual(list(zip(["M100", "M101", "M102", "M103"], texts)), pairs)
 
+    def test_counted_sw_directory_uses_hex_without_widening_legacy_scan(self):
+        for code in (0x00b5, 0xb5b5):
+            stream = self._framed_stream([(code, 0x80, 4)], ["one", "two", "", "four"])
+            pairs, warning = reader.device_comment_pairs({"synthetic": stream})
+            self.assertIsNone(warning)
+            self.assertEqual(["SW80", "SW81", "SW82", "SW83"], [d for d, _ in pairs])
+            self.assertEqual([d for d, _ in pairs], reader.unified_directory(stream))
+        self.assertNotIn(0xb5, reader.CMT_DIR_DEVICE)
+        with self.assertRaisesRegex(ValueError, "unknown counted comment device"):
+            reader.device_comment_pairs({"synthetic": self._framed_stream([(0x12b5, 0x80, 1)], ["bad"])})
+
     def test_counted_u_high_code_uses_same_family_table_for_every_directory_api(self):
         stream = self._framed_stream([(0xd8d8, 0x12, 1)], ["module label"])
         self.assertEqual(([('U12', 'module label')], None), reader.device_comment_pairs({'synthetic': stream}))
