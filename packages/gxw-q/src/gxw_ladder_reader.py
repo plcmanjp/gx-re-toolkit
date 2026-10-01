@@ -1289,7 +1289,7 @@ def decode_program(data, *, text_encoding="cp1252"):
             else:
                 out.append(("OUT", dev or ""))
             continue
-        # 대상 명령 04 <op> <02|04> 04 + 디바이스 [+ K]:
+        # 대상 명령 04 <op> <02|04> 04 + 디바이스 [+ 설정값 operand]:
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in (0x22, 0x24)
                 and data[i + 2] in ((0x04,) if data[i + 1] == 0x22 else (0x02, 0x04))
@@ -1298,10 +1298,19 @@ def decode_program(data, *, text_encoding="cp1252"):
             i += 4
             dev, i = _read_operand(data, i)
             if mnem == "OUTH":
-                k, j = _read_operand(data, i)
-                if k and k.startswith("K"):
+                # A command header is also shaped like a four-byte frame.
+                # Accept a recognized operand (with optional 04 separators)
+                # before reading, and keep the next command cursor on failure.
+                p = _scan_to_operand(data, i, n)
+                if p < 0 or any(value != 0x04 for value in data[i:p]):
+                    out.append(("<i:04:22:operand>", dev or ""))
+                    continue
+                k, j = _read_operand(data, p)
+                if k and "<dev:" not in k:
                     out.append((mnem, f"{dev} {k}")); i = j
                     continue
+                out.append(("<i:04:22:operand>", f"{dev or ''} {k or ''}".strip()))
+                continue
             out.append((mnem, dev or ""))
             continue
         if data[i:i + 2] == b"\x02\x02":
