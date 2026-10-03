@@ -26,3 +26,19 @@ spans remain unresolved. This research projection does not approve a target
 CPU address range or product conversion.
 Using the Windows storage API does not authorize GX GUI execution or PLC access.
 Some original CLIs return usage code 1 rather than success code 0 for help.
+
+## GXW reader boundaries
+
+For the recognized counted COMMENT format, `device_comment_pairs` binds declared
+device ranges to length-delimited UTF-16 text, including uppercase, numeric,
+empty, and multiline comments. Its typed word-bit section preserves the explicit
+device family, module, word address, and bit index. Unknown device types,
+duplicate addresses, and incomplete counted records are rejected.
+`device_comment_map` and `COMMENT.csv` omit empty comments; use
+`device_comment_pairs` when those entries matter.
+
+The reader recognizes the observed non-pulse `DFMOV` header `05 4c 05 0e 05`
+followed by exactly three complete operand frames. Malformed, truncated, or
+extra-operand forms retain the unknown-instruction marker `<i:05:4c:0e>` instead
+of being emitted as `DFMOV`. This describes the source-reader frame boundary;
+it does not expand the writer or CPU compatibility scope.

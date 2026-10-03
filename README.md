@@ -26,7 +26,10 @@ not launch GX software or connect to a PLC.
 ## Build and install
 
 Build from a reviewed, committed, clean standalone checkout. The output directory
-must be a new path outside the checkout. The following example uses PowerShell.
+must be a new path outside the checkout. Run commands from the repository root
+with Git available on PATH. Installation verification requires an isolated
+virtual environment without `PYTHONPATH`; the report path must not already exist.
+The following example uses PowerShell.
 
 ```powershell
 python -m venv C:\Temp\gx-build-env
@@ -59,15 +62,25 @@ UTF-16. `typed_note_records(..., framed_types=True)` exposes the byte-length
 Note subtype relation, raw bytes and instruction attachment for independent
 binding checks. These options do not establish an official GX import result.
 
+These are Python API keyword arguments. The current `gxw-inspect` and
+`gxw-reference-ir` CLIs do not expose switches for the encoding policy or Note
+subtype options. Use `pou_rows(..., text_encoding="cp949")` or
+`gxw_reference_ir.build(path, text_encoding="cp949")` for explicit source-text
+decoding. Request the extended Note subtype view separately with
+`typed_note_records(..., text_encoding="cp949", framed_types=True)`.
+
+The examples below use the virtual environment from the build example. If you
+installed elsewhere, replace the environment path with your installation path.
+
 ```powershell
-gx3-fx5-inspect --help
-gx3-r-inspect --help
-gxw-reference-ir --help
-gxw-write --help
-gxw-encode --help
-python -m gx_re_lab.lab --help
-python -m gx_re_lab.census --help
-python -m gx_re_lab.planner --help
+C:\Temp\gx-build-env\Scripts\gx3-fx5-inspect.exe --help
+C:\Temp\gx-build-env\Scripts\gx3-r-inspect.exe --help
+C:\Temp\gx-build-env\Scripts\gxw-reference-ir.exe --help
+C:\Temp\gx-build-env\Scripts\gxw-write.exe --help
+C:\Temp\gx-build-env\Scripts\gxw-encode.exe --help
+C:\Temp\gx-build-env\Scripts\python.exe -m gx_re_lab.lab --help
+C:\Temp\gx-build-env\Scripts\python.exe -m gx_re_lab.census --help
+C:\Temp\gx-build-env\Scripts\python.exe -m gx_re_lab.planner --help
 ```
 
 `gx3-r-inspect --summary` emits only the derived `FULL`, `PARTIAL`, or `FATAL`
@@ -85,6 +98,13 @@ Without an input, `gxw-inspect` and `python -m gxw_pou_devmap` display usage and
 exit with code 1. Give writing tools only disposable input copies and new output
 paths, never originals. Atomic protection against a hostile filesystem is not
 guaranteed across all input and output operations.
+
+`gxw-inspect project.gxw` prints every POU body returned by `collect_pous`,
+together with the nonempty device-comment map. CSV directory mode writes one
+file per detected POU plus `COMMENT.csv`. Without an output directory, `--csv`
+selects `MAIN` when present, otherwise the first detected POU in name-sorted
+order. Python callers can enumerate `collect_pous(streams)` rather than assume
+a `MAIN` POU or a fixed stream number.
 
 `gxw-inspect project.gxw --csv new-directory` requires an existing parent and
 an output directory that does not exist. It validates every POU CSV name,
