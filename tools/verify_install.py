@@ -15,7 +15,7 @@ VERSIONS = {"gx3-fx5-parser-toolkit": "0.4.0", "gx3-r-parser-toolkit": "0.2.0",
             "gxw-parser-toolkit": "0.1.0", "gx-re-lab": "0.1.0"}
 SCHEMAS = {"gx3_fx5_parser_toolkit": "b42b578be8b10190c4a7e8ff7dc52dda05b1e30cd1a21a03b16b92a51eb4f6ed",
            "gx3_r_parser_toolkit": "26ac430cef74466116d2607e8136feb648b7ebef222ace22dc6798fb529c095f"}
-LAB = "explorer_diff reference_query census r04_census gxw_census planner coverage_ledger external_compare final_scope lab experiment relation_audit campaign_coverage reducer table_delta snapshot".split()
+LAB = "explorer_diff reference_query census r04_census gxw_census planner coverage_ledger external_compare final_scope lab experiment relation_audit campaign_coverage corpus_census reducer table_delta snapshot".split()
 
 def verify(root: Path, commit: str, tree: str, profiles: str = "all"):
     if sys.prefix == sys.base_prefix or os.environ.get("PYTHONPATH"):
@@ -54,7 +54,7 @@ def verify(root: Path, commit: str, tree: str, profiles: str = "all"):
     commands = [([str(Path(sys.executable).parent / (name + (".exe" if os.name == "nt" else ""))), "--help"], expected)
                 for name, expected in cli]
     if profiles == "all":
-        commands += [([sys.executable, "-B", "-m", "gx_re_lab." + name, "--help"], 0) for name in LAB[:13]]
+        commands += [([sys.executable, "-B", "-m", "gx_re_lab." + name, "--help"], 0) for name in LAB[:14]]
         commands += [([sys.executable, "-B", "-m", "gxw_pou_devmap"], 1)]
     paths = ["packages/gx3-fx5/tests", "packages/gx3-r/tests"]
     if profiles == "all":
