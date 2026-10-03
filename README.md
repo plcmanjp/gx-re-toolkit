@@ -80,7 +80,9 @@ directory receives the complete artifact.
 
 The Lab module CLIs are `explorer_diff`, `reference_query`, `census`,
 `r04_census`, `gxw_census`, `planner`, `coverage_ledger`, `external_compare`,
-`final_scope`, `lab`, `experiment`, `relation_audit`, and `campaign_coverage`.
+`final_scope`, `lab`, `experiment`, `relation_audit`, `campaign_coverage`, and
+`corpus_census`. See [corpus census](docs/corpus-census.md) for bounded,
+pinned GX3-FX5/GXW-Q inventories and cross-project container-key observations.
 Without an input, `gxw-inspect` and `python -m gxw_pou_devmap` display usage and
 exit with code 1. Give writing tools only disposable input copies and new output
 paths, never originals. Atomic protection against a hostile filesystem is not

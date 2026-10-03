@@ -77,7 +77,9 @@ comment, label, archive 경로 및 그 밖의 프로젝트 문자열은 출력�
 
 Lab 모듈 CLI는 `explorer_diff`, `reference_query`, `census`, `r04_census`,
 `gxw_census`, `planner`, `coverage_ledger`, `external_compare`, `final_scope`,
-`lab`, `experiment`, `relation_audit`, `campaign_coverage`다.
+`lab`, `experiment`, `relation_audit`, `campaign_coverage`, `corpus_census`다.
+고정 SHA 기반 GX3-FX5/GXW-Q 전수 구조 검사와 프로젝트 간 내부 키 비교는
+[corpus census](docs/corpus-census-ko.md)를 따른다.
 `gxw-inspect`와 `python -m gxw_pou_devmap`은 입력이 없으면 사용법과 종료 코드 1을 반환한다.
 작성 도구에는 원본 대신 폐기 가능한 복사본과 새 출력 경로만 전달한다.
 입출력 전체에 대한 원자적 hostile-filesystem 방어를 보장하지 않는다.
