@@ -13,7 +13,7 @@ The source is published for offline research, not approved for field deployment.
 | Distribution | Version | Purpose |
 | --- | --- | --- |
 | gx3-fx5-parser-toolkit | 0.4.0 | GX3 FX5 structure and Neutral IR analysis |
-| gx3-r-parser-toolkit | 0.2.0 | Analysis of the specified R04CPU GX3 profile |
+| gx3-r-parser-toolkit | 0.2.0 | Read-only analysis of MELSEC iQ-R family GX Works3 projects |
 | gxw-parser-toolkit | 0.1.0 | GXW analysis, Reference IR, and candidate file writing |
 | gx-re-lab | 0.1.0 | Bounded comparison, census, planning, and reduction research tools |
 
@@ -22,6 +22,21 @@ pywin32. See the [compatibility matrix](docs/compatibility-matrix.md) for CPU
 coverage and limitations. Private originals, customer data, official exports,
 and vendor materials are not included. Default tests and runtime operations do
 not launch GX software or connect to a PLC.
+
+## Project direction
+
+The `gx3-r-parser-toolkit` is intended to become a general-purpose, read-only
+analysis toolkit for MELSEC iQ-R family GX Works3 projects. R04CPU is the current
+implementation and validation starting point, not the project's long-term scope.
+
+The current explicit supported profile remains R04CPU Ladder with the
+`R04/4097` Unit/UnitId pair. Other explicit CPU pairs are reported as
+`UNSUPPORTED`; missing or ambiguous identity evidence is reported as
+`AMBIGUOUS`. Extending the iQ-R scope requires evidence for each added CPU and
+project format, explicit profile handling, and regression validation. This
+direction does not claim that other iQ-R CPUs are supported today or authorize
+PLC operation or field deployment. See the
+[compatibility matrix](docs/compatibility-matrix.md) for current boundaries.
 
 ## Build and install
 

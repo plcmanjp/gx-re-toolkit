@@ -7,9 +7,17 @@
 | 패키지 | 명시한 범위 | 범위 밖 |
 |---|---|---|
 | gx3-fx5-parser-toolkit 0.4.0 | 검증된 FX5-family GX3 carrier와 Neutral IR 1.0.0 | 모든 FX 명령이나 언어 지원 주장 |
-| gx3-r-parser-toolkit 0.2.0 | `R04/4097`의 R04CPU Ladder profile | 다른 R CPU 전체로의 일반화 |
+| gx3-r-parser-toolkit 0.2.0 | 현재 명시적 지원 프로필: `R04/4097`의 R04CPU Ladder | 다른 iQ-R CPU 또는 미검증 프로젝트 형식의 현재 지원 주장 |
 | gxw-parser-toolkit 0.1.0 | 기존 Q 계열 GXW 판독과 제한된 후보 writer/encoder | 모든 CPU/명령의 공식 저장 및 실행 보증 |
 | gx-re-lab 0.1.0 | 고정 입력의 연구 조회, 비교, census, 계획 | 공식 lifecycle 수집과 제품 수락 |
+
+R 도구의 프로젝트 대상은 MELSEC iQ-R 계열 전반의 읽기 전용 분석이며,
+현재 구현은 위에 명시한 R04CPU Ladder 프로필만 지원합니다. 판별기는 다른
+Unit/UnitId 조합이 명시되면 `UNSUPPORTED`, 기종 식별 근거가 없거나 모호하면
+`AMBIGUOUS`로 판정합니다. 현재 프로필 식별자는
+`mitsubishi.gx3.r04cpu.ladder`로 유지됩니다. iQ-R 전반으로의 확대는 개발 방향이며
+현재 호환성 보장이 아닙니다. [프로젝트 방향](../README-ko.md#프로젝트-방향)을
+참고하세요.
 
 FX5 detector의 정확한 tuple은 `(FX5U, 528)`, `(FX5UJ, 529)`, `(FX5S, 530)`입니다.
 FX5UC는 별도 identity를 추측하지 않고 검증된 FX5U tuple을 공유하는 범위로 제한합니다.

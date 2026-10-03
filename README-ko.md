@@ -14,7 +14,7 @@ Mitsubishi Electric과 제휴하거나 승인을 받은 도구가 아닙니다.
 | 배포 패키지 | 버전 | 용도 |
 | --- | --- | --- |
 | gx3-fx5-parser-toolkit | 0.4.0 | GX3 FX5 구조와 Neutral IR 분석 |
-| gx3-r-parser-toolkit | 0.2.0 | 명시된 R04CPU GX3 분석 |
+| gx3-r-parser-toolkit | 0.2.0 | MELSEC iQ-R 계열 GX Works3 프로젝트의 읽기 전용 분석 |
 | gxw-parser-toolkit | 0.1.0 | GXW 분석, Reference IR, 후보 파일 작성 |
 | gx-re-lab | 0.1.0 | 제한된 비교, census, 계획, 축소 연구 도구 |
 
@@ -22,6 +22,19 @@ Python 3.12 이상이 필요합니다. 전체 작성 기능은 Windows와 pywin3
 지원 CPU와 보장 범위는 [호환성 표](docs/compatibility-matrix-ko.md)를 확인하세요.
 비공개 원본, 고객 데이터, 공식 export, vendor 자료는 포함하지 않습니다.
 기본 테스트와 런타임은 GX 프로그램이나 PLC를 실행 또는 연결하지 않습니다.
+
+## 프로젝트 방향
+
+`gx3-r-parser-toolkit`은 MELSEC iQ-R 계열의 GX Works3 프로젝트를 범용적으로
+분석하는 읽기 전용 도구를 지향합니다. R04CPU는 현재 구현과 검증의 출발점이며,
+프로젝트의 장기적인 대상 범위를 R04CPU로 한정하지 않습니다.
+
+현재 구현의 명시적 지원 프로필은 `R04/4097` Unit/UnitId 조합의 R04CPU
+Ladder입니다. 다른 CPU 조합이 명시된 경우에는 `UNSUPPORTED`, 기종 식별 근거가
+없거나 모호한 경우에는 `AMBIGUOUS`로 판정합니다. iQ-R 범위 확장에는 추가할 CPU와
+프로젝트 형식별 근거, 명시적인 프로필 처리 및 회귀 검증이 필요합니다. 이 방향성이
+다른 iQ-R CPU의 현재 지원이나 PLC 운전·현장 적용 승인을 의미하지는 않습니다.
+현재 경계는 [호환성 표](docs/compatibility-matrix-ko.md)를 확인하세요.
 
 ## 빌드와 설치
 
