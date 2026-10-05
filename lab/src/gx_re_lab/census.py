@@ -16,7 +16,7 @@ import gx3_fx5_profile.topology as topology_module
 from gx3_core.archive import ArchiveBudget, SafeGx3Archive
 from gx3_fx5_parser_toolkit.cli import _publish_json
 
-MAX_INPUT_BYTES = 16 * 1024 * 1024
+MAX_INPUT_BYTES = 32 * 1024 * 1024
 MAX_REPORT_BYTES = 4 * 1024 * 1024
 
 
