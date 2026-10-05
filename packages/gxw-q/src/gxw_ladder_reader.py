@@ -1051,8 +1051,14 @@ def _decode_buffer_transfer(data, offset):
         if not token or "<dev:" in token or end != cursor - operand_start:
             return (unknown[0], " ".join(operands)), cursor
         operands.append(token)
-    if (cursor + 1 < len(data) and data[cursor] in (4, 5, 6, 7)
-            and data[cursor + 1] >= 0x80):
+    # Separators must not conceal a fifth operand. Look ahead without moving
+    # the decoder cursor, so a following instruction keeps its own boundary.
+    probe = cursor
+    while (probe + 1 < len(data) and data[probe] == 0x04
+           and data[probe + 1] in (4, 5, 6, 7)):
+        probe += 1
+    if (probe + 1 < len(data) and data[probe] in (4, 5, 6, 7)
+            and data[probe + 1] >= 0x80):
         return (unknown[0], " ".join(operands)), cursor
     return (opcode, " ".join(operands)), cursor
 
