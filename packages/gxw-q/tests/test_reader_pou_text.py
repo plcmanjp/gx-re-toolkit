@@ -15,6 +15,104 @@ def text_frame(text, marker, encoding="cp949", subtype=None):
 
 
 class SourcePouTextTests(unittest.TestCase):
+    def test_high_speed_timer_preserves_word_preset_and_next_command(self):
+        # Synthetic timers and set values; no project-derived fixture.
+        header = bytes.fromhex("04 22 04 04")
+        following = bytes.fromhex("03 1b 03")
+        for coil, expected_coil in (("04 c2 07 04", "T7"), ("04 c8 05 04", "ST5")):
+            for preset, expected_preset in (("04 a8 31 04", "D49"), ("04 e8 14 04", "K20")):
+                with self.subTest(coil=expected_coil, preset=expected_preset):
+                    rows, unknown_i, unknown_d = reader.pou_rows(
+                        LD + header + bytes.fromhex(coil + " " + preset) + following + LD)
+                    self.assertEqual([("LD", "M0", ""), ("OUTH", f"{expected_coil} {expected_preset}", ""),
+                                      ("MRD", "", ""), ("LD", "M0", ""), ("END", "", "")], rows)
+                    self.assertFalse(unknown_i or unknown_d)
+
+    def test_high_speed_timer_never_consumes_following_instruction_as_preset(self):
+        incomplete = bytes.fromhex("04 22 04 04 04 c2 07 04")
+        for following, expected in (("03 1b 03", ("MRD", "", "")),
+                                    ("04 24 02 04 04 90 01 04", ("RST", "M1", "")),
+                                    ("04 22 04 04 04 c2 08 04 04 e8 14 04", ("OUTH", "T8 K20", ""))):
+            rows, unknown_i, _ = reader.pou_rows(LD + incomplete + bytes.fromhex(following) + LD)
+            self.assertEqual([("LD", "M0", ""), ("<i:04:22:operand>", "T7", ""), expected,
+                              ("LD", "M0", ""), ("END", "", "")], rows)
+            self.assertIn("<i:04:22:operand>", unknown_i)
+
+    def test_high_speed_timer_unknown_and_truncated_preset_fail_closed(self):
+        header = bytes.fromhex("04 22 04 04 04 c2 07 04")
+        for preset in ("04 ff 01 04", "05 a8 01", "04 f0 02 04"):
+            rows, unknown_i, _ = reader.pou_rows(LD + header + bytes.fromhex(preset) + bytes.fromhex("04 24 02 04 04 90 01 04") + LD)
+            self.assertIn("<i:04:22:operand>", unknown_i)
+            self.assertIn(("RST", "M1", ""), rows)
+            self.assertEqual(("LD", "M0", ""), rows[-2])
+
+    def test_buffer_transfer_exact_modes_and_four_operands(self):
+        operands = bytes.fromhex("04 ea 06 04 05 ea 00 06 05 05 a8 bc 02 05 04 e8 14 04")
+        for header, opcode in (("05 56 05 00 05", "FROM"),
+                               ("06 56 06 00 02 06", "FROMP"),
+                               ("06 56 06 02 02 06", "TOP")):
+            command = bytes.fromhex(header) + operands
+            for prefix in (b"", LD):
+                rows, unknown_i, unknown_d = reader.pou_rows(prefix + command + LD)
+                index = bool(prefix)
+                self.assertEqual((opcode, "H6 H600 D700 K20", ""), rows[index])
+                self.assertEqual(("LD", "M0", ""), rows[index + 1])
+                self.assertFalse(unknown_i or unknown_d)
+
+    def test_buffer_transfer_rejects_header_short_extra_and_unknown_operand(self):
+        header = bytes.fromhex("06 56 06 00 02 06")
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        cases = [bytes.fromhex("06 56 06 00 03 06") + operands,
+                 bytes.fromhex("05 56 05 02 05") + operands,
+                 header + operands[:-4], header + operands + bytes.fromhex("04 e8 02 04"),
+                 header + operands + bytes.fromhex("04 ff 01 04"),
+                 header + operands + bytes.fromhex("05 a8 01"),
+                 header + operands.replace(bytes.fromhex("05 a8"), bytes.fromhex("05 ff"))]
+        for command in cases:
+            rows, unknown_i, _ = reader.pou_rows(LD + command + LD)
+            self.assertIn("<i:56:buffer-transfer>", unknown_i)
+            self.assertNotIn("FROMP", [row[0] for row in rows])
+            self.assertEqual(("LD", "M0", ""), rows[-2])
+
+    def test_buffer_transfer_extra_operand_after_separators_fails_closed(self):
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        for frame, opcode in (("05 56 05 00 05", "FROM"),
+                              ("06 56 06 00 02 06", "FROMP"),
+                              ("06 56 06 02 02 06", "TOP")):
+            header = bytes.fromhex(frame)
+            for count in (1, 2, 7):
+                for extra in ("04 e8 02 04", "05 a8 01 00 05", "05 ff 01 00 05", "05 a8 01"):
+                    with self.subTest(opcode=opcode, count=count, extra=extra):
+                        rows, unknown_i, _ = reader.pou_rows(
+                            LD + header + operands + b"\x04" * count + bytes.fromhex(extra) + LD)
+                        self.assertIn("<i:56:buffer-transfer>", unknown_i)
+                        self.assertNotIn(opcode, [row[0] for row in rows])
+                        self.assertEqual(("LD", "M0", ""), rows[-2])
+            for command, expected in ((LD, ("LD", "M0", "")),
+                                      (bytes.fromhex("04 24 02 04 04 90 01 04"), ("RST", "M1", ""))):
+                rows, unknown_i, unknown_d = reader.pou_rows(
+                    LD + header + operands + b"\x04" + command)
+                self.assertEqual(opcode, rows[1][0])
+                self.assertEqual(expected, rows[2])
+                self.assertFalse(unknown_i or unknown_d)
+
+    def test_buffer_transfer_eof_and_leading_malformed_keep_coverage(self):
+        header = bytes.fromhex("06 56 06 00 02 06")
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        self.assertEqual(("FROMP", "H6 H0A8 D890 K1", ""), reader.pou_rows(header + operands)[0][0])
+        for cut in range(2, len(header + operands)):
+            command = (header + operands)[:cut]
+            rows, unknown_i, _ = reader.pou_rows(command + LD)
+            self.assertIn("<i:56:buffer-transfer>", unknown_i, cut)
+            self.assertEqual(("LD", "M0", ""), rows[-2], cut)
+            if cut >= 3:
+                reader.pou_rows(command)  # Truncated EOF must never raise.
+
+        coil = bytes.fromhex("04 20 02 04 04 90 00 04")
+        rows, unknown_i, _ = reader.pou_rows(LD + header + operands[:-4] + bytes.fromhex("04 f0 06 04") + coil)
+        self.assertIn("<i:56:buffer-transfer>", unknown_i)
+        self.assertIn(("OUT", "M0", ""), rows)
+
     def test_unicode_and_byte_length_note_binding(self):
         text = "설비 준비"
         for subtype, expected in ((1, "s"), ((len(text.encode('cp949')) + 5) // 2, "i")):

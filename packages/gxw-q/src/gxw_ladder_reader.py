@@ -227,7 +227,7 @@ CMT_DIR_DEVICE = {
     0x93: ("F", 10), 0xc8: ("ST", 10), 0xcc: ("Z", 10),
 }
 MAX_COMMENT_DIRECTORY_ENTRIES = 100_000
-_COUNTED_COMMENT_DEVICE = {**CMT_DIR_DEVICE, 0xd8: ("U", 16)}
+_COUNTED_COMMENT_DEVICE = {**CMT_DIR_DEVICE, 0xd8: ("U", 16), 0xb5: ("SW", 16)}
 
 
 def _cmt_hex(a):
@@ -1016,6 +1016,53 @@ def _decode_socket_command(data, offset):
     return (("SP." + name.decode("ascii"), " ".join(operands)), cursor)
 
 
+def _decode_buffer_transfer(data, offset):
+    """Consume only the observed FROM/FROMP/TOP headers and four operands.
+
+    No generic 56-family mapping: other modes and truncated or extra operands
+    remain unknown. Operand values never select the instruction variant.
+    """
+    if data[offset:offset + 2] not in (b"\x05\x56", b"\x06\x56"):
+        return None
+    headers = {b"\x05\x56\x05\x00\x05": "FROM",
+               b"\x06\x56\x06\x00\x02\x06": "FROMP",
+               b"\x06\x56\x06\x02\x02\x06": "TOP"}
+    unknown = ("<i:56:buffer-transfer>", "")
+    for header, opcode in headers.items():
+        if data[offset:offset + len(header)] == header:
+            break
+    else:
+        return unknown, offset + 2
+    cursor = offset + len(header)
+    operands = []
+    modifiers = {MOD_ZINDEX, MOD_ZINDEX2, MOD_UMODULE, MOD_BIT, MOD_DIGIT}
+    for _ in range(4):
+        operand_start = cursor
+        while True:
+            if cursor >= len(data) or not _is_operand_frame(data, cursor, len(data)):
+                return (unknown[0], " ".join(operands)), cursor
+            code = data[cursor + 1]
+            cursor += data[cursor]
+            if code not in modifiers:
+                break
+        # Validate every modifier/base frame before calling the legacy helper.
+        # The bounded slice cannot consume a following instruction as a base.
+        token, end = _read_operand(data[operand_start:cursor], 0)
+        if not token or "<dev:" in token or end != cursor - operand_start:
+            return (unknown[0], " ".join(operands)), cursor
+        operands.append(token)
+    # Separators must not conceal a fifth operand. Look ahead without moving
+    # the decoder cursor, so a following instruction keeps its own boundary.
+    probe = cursor
+    while (probe + 1 < len(data) and data[probe] == 0x04
+           and data[probe + 1] in (4, 5, 6, 7)):
+        probe += 1
+    if (probe + 1 < len(data) and data[probe] in (4, 5, 6, 7)
+            and data[probe + 1] >= 0x80):
+        return (unknown[0], " ".join(operands)), cursor
+    return (opcode, " ".join(operands)), cursor
+
+
 def _decode_dfmov(data, offset):
     """Decode the independently observed non-pulse DFMOV frame atomically."""
     n = len(data)
@@ -1067,6 +1114,10 @@ def decode_program(data, *, text_encoding="cp1252"):
     # 단순명령뿐 아니라 비교접점이 첫 rung인 프로젝트도 시작 후보로 인정한다.
     start = 0
     for k in range(len(data) - 5):
+        buffer_transfer = _decode_buffer_transfer(data, k)
+        if buffer_transfer is not None:
+            start = k
+            break
         if data[k:k + 2] == b"\x05\x4c" and data[k + 3] == 0x0e:
             start = k
             break
@@ -1133,6 +1184,11 @@ def decode_program(data, *, text_encoding="cp1252"):
     out, i, n = [], 0, len(data)
     while i < n - 2:
         b = data[i]
+        buffer_transfer = _decode_buffer_transfer(data, i)
+        if buffer_transfer is not None:
+            row, i = buffer_transfer
+            out.append(row)
+            continue
         socket = _decode_socket_command(data, i)
         if socket is not None:
             row, i = socket
@@ -1239,7 +1295,7 @@ def decode_program(data, *, text_encoding="cp1252"):
             else:
                 out.append(("OUT", dev or ""))
             continue
-        # 대상 명령 04 <op> <02|04> 04 + 디바이스 [+ K]:
+        # 대상 명령 04 <op> <02|04> 04 + 디바이스 [+ 설정값 operand]:
         # Source-derived parser observation.
         if (b == 0x04 and i + 3 < n and data[i + 1] in (0x22, 0x24)
                 and data[i + 2] in ((0x04,) if data[i + 1] == 0x22 else (0x02, 0x04))
@@ -1248,10 +1304,19 @@ def decode_program(data, *, text_encoding="cp1252"):
             i += 4
             dev, i = _read_operand(data, i)
             if mnem == "OUTH":
-                k, j = _read_operand(data, i)
-                if k and k.startswith("K"):
+                # A command header is also shaped like a four-byte frame.
+                # Accept a recognized operand (with optional 04 separators)
+                # before reading, and keep the next command cursor on failure.
+                p = _scan_to_operand(data, i, n)
+                if p < 0 or any(value != 0x04 for value in data[i:p]):
+                    out.append(("<i:04:22:operand>", dev or ""))
+                    continue
+                k, j = _read_operand(data, p)
+                if k and "<dev:" not in k:
                     out.append((mnem, f"{dev} {k}")); i = j
                     continue
+                out.append(("<i:04:22:operand>", f"{dev or ''} {k or ''}".strip()))
+                continue
             out.append((mnem, dev or ""))
             continue
         if data[i:i + 2] == b"\x02\x02":
