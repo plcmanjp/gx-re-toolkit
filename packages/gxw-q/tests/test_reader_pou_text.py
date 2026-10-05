@@ -74,6 +74,28 @@ class SourcePouTextTests(unittest.TestCase):
             self.assertNotIn("FROMP", [row[0] for row in rows])
             self.assertEqual(("LD", "M0", ""), rows[-2])
 
+    def test_buffer_transfer_extra_operand_after_separators_fails_closed(self):
+        operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
+        for frame, opcode in (("05 56 05 00 05", "FROM"),
+                              ("06 56 06 00 02 06", "FROMP"),
+                              ("06 56 06 02 02 06", "TOP")):
+            header = bytes.fromhex(frame)
+            for count in (1, 2, 7):
+                for extra in ("04 e8 02 04", "05 a8 01 00 05", "05 ff 01 00 05", "05 a8 01"):
+                    with self.subTest(opcode=opcode, count=count, extra=extra):
+                        rows, unknown_i, _ = reader.pou_rows(
+                            LD + header + operands + b"\x04" * count + bytes.fromhex(extra) + LD)
+                        self.assertIn("<i:56:buffer-transfer>", unknown_i)
+                        self.assertNotIn(opcode, [row[0] for row in rows])
+                        self.assertEqual(("LD", "M0", ""), rows[-2])
+            for command, expected in ((LD, ("LD", "M0", "")),
+                                      (bytes.fromhex("04 24 02 04 04 90 01 04"), ("RST", "M1", ""))):
+                rows, unknown_i, unknown_d = reader.pou_rows(
+                    LD + header + operands + b"\x04" + command)
+                self.assertEqual(opcode, rows[1][0])
+                self.assertEqual(expected, rows[2])
+                self.assertFalse(unknown_i or unknown_d)
+
     def test_buffer_transfer_eof_and_leading_malformed_keep_coverage(self):
         header = bytes.fromhex("06 56 06 00 02 06")
         operands = bytes.fromhex("04 ea 06 04 04 ea a8 04 05 a8 7a 03 05 04 e8 01 04")
