@@ -24,9 +24,12 @@ class EmptyOldTests(unittest.TestCase):
             source = Path(directory) / "input.gxw"
             output = Path(directory) / "output.gxw"
             source.write_bytes(b"source bytes")
-            with mock.patch.object(WRITER, "read_top", side_effect=AssertionError("must not read")):
+            stream = io.StringIO()
+            with (mock.patch.object(WRITER, "read_top", side_effect=AssertionError("must not read")),
+                  mock.patch.object(sys, "stdout", stream)):
                 self.assertEqual(7, WRITER.do_replace(source, b"", b"NEW", True, False, output, True, False))
                 self.assertEqual(7, WRITER.do_replace(source, b"", b"", False, False, output, False, False))
+            self.assertEqual(2, stream.getvalue().count("OLD 빈 패턴"))
             self.assertEqual(b"source bytes", source.read_bytes())
             self.assertFalse(output.exists())
 
@@ -63,7 +66,8 @@ class CsvPublicationTests(unittest.TestCase):
               mock.patch.object(READER, "project_info", return_value=("PROJECT", "PLC")),
               mock.patch.object(READER, "pou_rows", return_value=([], set(), set())),
               mock.patch.object(READER, "typed_note_records", return_value=()),
-              mock.patch.object(READER, "gx_csv_for_pou", side_effect=render)):
+              mock.patch.object(READER, "gx_csv_for_pou", side_effect=render),
+              mock.patch.object(sys, "stdout", io.StringIO())):
             READER.output_csv(str(source), pous, {"X10": "synthetic comment"}, outdir=str(target))
 
     def test_new_directory_publishes_utf16_and_rerun_preserves_bytes(self) -> None:
