@@ -58,7 +58,24 @@ def _finding(
 def build_neutral_ir(source: Path) -> dict[str, Any]:
     with SafeGx3Archive(source) as archive:
         profile = detect(archive)
-        project = discover_project(archive)
+        try:
+            project = discover_project(archive)
+        except ValueError:
+            if profile.decision.value != "AMBIGUOUS":
+                raise
+            # Retain the detector's findings without fabricating a selected CPU.
+            # The archive itself is the evidence when Config cannot be resolved.
+            project = {
+                "cpu": "MINING_REQUIRED",
+                "title_digest": archive.sha256,
+                "provenance": {
+                    "source_entry": "archive",
+                    "source_store": "ZIP",
+                    "source_locator": "archive",
+                    "source_digest": archive.sha256,
+                    "relation_evidence": "unresolved Config identity; immutable archive evidence",
+                },
+            }
         supported = profile.decision.value == "SUPPORTED"
         topology = (
             discover_pous(archive)
@@ -139,7 +156,7 @@ def build_neutral_ir(source: Path) -> dict[str, Any]:
         config_digest = project["provenance"]["source_digest"]
         config_provenance = {
             "source_entry": project["provenance"]["source_entry"],
-            "source_store": "XML",
+            "source_store": project["provenance"].get("source_store", "XML"),
             "source_locator": project["provenance"]["source_locator"],
             "source_digest": config_digest,
             "relation_evidence": [project["provenance"]["relation_evidence"]],

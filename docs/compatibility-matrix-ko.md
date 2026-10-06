@@ -23,6 +23,12 @@ FX5 detector의 정확한 tuple은 `(FX5U, 528)`, `(FX5UJ, 529)`, `(FX5S, 530)`�
 FX5UC는 별도 identity를 추측하지 않고 검증된 FX5U tuple을 공유하는 범위로 제한합니다.
 tuple 일치만으로 전체 프로젝트의 완전 해독이나 target 변환을 승인하지 않습니다.
 
+CPU identity는 XML 루트 또는 wrapper의 직계 자식 위치에 Config 노드가 정확히
+하나 있어야 합니다. 다중 노드, 동일 중복과 중첩 후보는 탐색 순서와 무관하게
+`AMBIGUOUS`입니다. R은 `Config.xml`과 `!!Config.xml`의 바이트 일치를 요구하고,
+FX5는 mirror가 있을 때 일치를 검사합니다. 파일 간 불일치와 한 XML 안의 다중
+노드는 별도 진단입니다. 이 규칙은 지원 CPU 조합을 확장하지 않습니다.
+
 FX5와 R schema는 버전과 embedded identifier가 같더라도 서로 다른 resource입니다.
 각 owning package에서 명시한 profile로 선택하며 교차 fallback하지 않습니다.
 FX5의 `SOURCE_GLOBAL_ORDER_NOT_SERIALIZED` finding을 R에 허용하지 않습니다.
@@ -35,6 +41,12 @@ Windows storage API 사용은 GX GUI 또는 PLC 접속 권한을 뜻하지 않�
 일부 원래 CLI의 도움말은 성공 코드 0이 아닌 사용법 코드 1을 반환할 수 있습니다.
 
 ## GXW 판독 경계
+
+첫 프로그램 영역은 길이로 구분된 완전한 프레임 밖의 END trailer 전체에서
+끝납니다. 피연산자나 텍스트에 포함된 유사 마커는 경계로 사용하지 않습니다.
+프레임 밖의 불완전한 마커나 마커를 포함한 손상 프레임은 모호한 경계로 거부합니다.
+EOF에서 잘린 접점 헤더는 인덱스 예외 대신 미확인 명령 진단을 유지합니다.
+이 진단은 Reference IR의 COMPLETE 판정도 막습니다.
 
 판독 대상 counted COMMENT 형식에서 `device_comment_pairs`는 명시된 디바이스
 범위를 길이 정보가 있는 UTF-16 텍스트에 결합하며, 대문자·숫자·빈 문자열·여러 줄

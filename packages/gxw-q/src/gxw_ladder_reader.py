@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 '\ngxw_ladder_reader.py - GX Works2 .gxw 래더(POU) → 사람이 읽는 IL 텍스트 덤프\n\nCSV export 대체 PoC 리더. `_hdb/12`(POU 본체, 비암호화 바이너리 토큰)를 직접 디코드한다.\n암호 해독 불필요 - 평문 토큰 파싱.\n\n요소 문법(관찰):\n  03 TT 03 04 DD AA          단순 IL 요소: 명령 TT, 디바이스 코드 DD, 주소 AA\n  0e ee <텍스트> 0e 04 a8 PP  라인 스테이트먼트(rung 주석), PP=위치(줄마다 +0x14)\n  05 00 00 00 <UTF-16LE>      POU 이름\n  04 34 02 04 …               섹션 구분자\n\nopcode/디바이스 사전은 1차(샘플 차분 기반). 미확인 토큰은 raw로 표기.\n완전화: T/C/D/응용명령 다중접점(AND/OR) 샘플로 사전 확장(README §5).\n\n사용:\n  python gxw_ladder_reader.py <project.gxw>               # 텍스트: 전 POU IL + 디바이스 코멘트\n  python gxw_ladder_reader.py <project.gxw> --csv <dir>   # GX Works2 IL CSV: POU별 <dir>/<POU>.csv + COMMENT.csv\n  python gxw_ladder_reader.py <project.gxw> --csv         # (dir 없으면) MAIN을 stdout으로\nGX CSV는 원본 포맷(UTF-16 탭 전필드인용 프리앰블 연속행 END)을 재현 - Step No.는 GX가 import 시 재계산.\n'
+import argparse
 import sys, os, re, struct, tempfile
 from pathlib import Path
 import gxw_bounded_ole as bounded_ole
@@ -862,6 +863,9 @@ _OPERAND_TC = set(DEVICE) | {0xe8, 0xe9, 0xea, 0xeb, 0xec, MOD_ZINDEX, MOD_UMODU
 
 def _is_operand_frame(data, p, n):
     """data[p]가 유효 오퍼랜드 프레임 오프너(<f><tc><val><f>, tc=디바이스/상수/수식자)인지."""
+    n = min(n, len(data))
+    if not 0 <= p < n:
+        return False
     f = data[p]
     if f in (0x04, 0x05, 0x06, 0x07):
         w = f - 0x03
@@ -876,7 +880,12 @@ def _scan_to_operand(data, i, n, window=6):
     for _ in range(window):
         if p >= n - 2:
             return -1
-        if _is_operand_frame(data, p, n):
+        if (_is_operand_frame(data, p, n)
+                or (data[p] in (4, 5, 6, 7) and p + data[p] <= n
+                    and data[p + data[p] - 1] == data[p] and data[p + 1] >= 0x80
+                    and data[p + 1] not in (0x80, 0x82))):
+            # Retain an unknown descriptor as one operand finding rather than
+            # searching its payload for a coincidental supported frame.
             return p
         if ((data[p] == 0x03 and p + 2 < n and data[p + 2] == 0x03)          # 03 TT 03
                 or data[p:p + 2] == b"\x02\x02"
@@ -1114,6 +1123,12 @@ def decode_program(data, *, text_encoding="cp1252"):
     # 단순명령뿐 아니라 비교접점이 첫 rung인 프로젝트도 시작 후보로 인정한다.
     start = 0
     for k in range(len(data) - 5):
+        # Keep balanced text carriers at the beginning even when their subtype
+        # or payload is malformed, so the main loop retains their diagnostics.
+        if (data[k + 1] in (0x80, 0x82) and data[k] >= 5
+                and k + data[k] <= len(data) and data[k + data[k] - 1] == data[k]):
+            start = k
+            break
         buffer_transfer = _decode_buffer_transfer(data, k)
         if buffer_transfer is not None:
             start = k
@@ -1194,6 +1209,16 @@ def decode_program(data, *, text_encoding="cp1252"):
             row, i = socket
             out.append(row)
             continue
+        # A balanced text carrier remains a frame when its subtype is invalid.
+        # Diagnose it without scanning its payload as synthetic instructions.
+        if (i + 2 < n and data[i + 1] in (0x80, 0x82) and b >= 5
+                and i + b <= n and data[i + b - 1] == b
+                and data[i + 2] != (b + 1) // 2
+                and not (data[i + 1] == 0x82 and data[i + 2] == 1)):
+            kind = "statement" if data[i + 1] == 0x80 else "note"
+            out.append((f"<i:text:{kind}>", ""))
+            i += b
+            continue
         # 라인 스테이트먼트(rung 주석): <L=len+4> 80 <H=ceil(L/2)> <텍스트 (L-4)자> <L>
         # 닫기 바이트(=L) + 80 마커가 false match 차단. 텍스트는 cp1252(em dash 0x97 등).
         # Source-derived parser observation.
@@ -1207,6 +1232,9 @@ def decode_program(data, *, text_encoding="cp1252"):
                     out.append(("__STMT__", _decode_pou_text(txt, text_encoding)))
                     i += 3 + tl + 1
                     continue
+                out.append(("<i:text:statement>", ""))
+                i += L
+                continue
         # Note frame accepts the established length relation and the isolated
         # Issue #39 peripheral raw-01 frame.  Do not infer a general subtype
         # grammar from either raw byte here.
@@ -1220,6 +1248,9 @@ def decode_program(data, *, text_encoding="cp1252"):
                     out.append(("__NOTE__", _decode_pou_text(txt, text_encoding)))
                     i += 3 + tl + 1
                     continue
+                out.append(("<i:text:note>", ""))
+                i += L
+                continue
         # 통신/지능형 명령 <L> <71|72> <3B> <ASCII (L-6)자> <L> + 오퍼랜드 (ZP.BUFSND/GP.OUTPUT/G.INPUT 등)
         if (0x08 <= b <= 0x1f and i + 1 < n and data[i + 1] in COMM_PFX
                 and i + b - 1 < n and data[i + b - 1] == b):
@@ -1386,15 +1417,13 @@ def decode_program(data, *, text_encoding="cp1252"):
                 i += 4
                 ops = []
                 for _ in range(nops):
-                    p = i
-                    while p < n - 4 and not _is_operand_frame(data, p, n):
-                        p += 1
-                        if p - i > 12:
-                            p = i
-                            break
+                    p = _scan_to_operand(data, i, n, window=13)
+                    if p < 0:
+                        break
                     o, i = _read_operand(data, p)
                     ops.append(o or "")
-                out.append((mnem, " ".join(ops).strip()))
+                opcode = mnem if len(ops) == nops else "<i:05:4c:operand>"
+                out.append((opcode, " ".join(ops).strip()))
                 continue
             # Source-derived parser observation.
         if (b == 0x05 and i + 4 < n and data[i + 1] == 0x49
@@ -1561,10 +1590,56 @@ def is_pou_body(b, registry_names=None):
     return (registry_names is None) or (nm in registry_names)
 
 
+def program_section(data):
+    """Bound the first section at a trailer outside length-delimited frames.
+
+    Retain the complete END frame, including its opcode bytes, in the digest.
+    Balanced operand carriers with unknown high-byte descriptors are skipped
+    structurally, not declared decoded. Unapproved low-byte framing containing
+    a marker is ambiguous.
+    An unframed marker or a marker inside damaged framing is ambiguous.
+    """
+    i, n = 0, len(data)
+    while i < n:
+        if data[i:i + 4] == b"\x04\x34\x02\x04":
+            return data[:i + 4]
+        length = data[i]
+        text_frame = (i + 2 < n and data[i + 1] in (0x80, 0x82)
+                      and length >= 5)
+        # A separator followed by an operand can also have equal endpoints.
+        # Require the descriptor/header shape, rather than endpoint equality.
+        ordinary_frame = (i + 2 < n and (
+            length == 3
+            or (length in (4, 5, 6, 7) and data[i + 1] >= 0x80)
+            or (length == 4 and data[i + 1] in (set(INSTR) | set(EDGE04) | set(SPECIAL04) | {0x21, 0x22})
+                and data[i + 2] in (2, 3, 4, 5))
+            or (length in (5, 6) and 0x40 <= data[i + 1] <= 0x7f)))
+        if ordinary_frame or text_frame:
+            end = i + length
+            if end <= n and data[end - 1] == length:
+                i = end
+                continue
+            if b"\x34\x02\x04" in data[i + 1:min(end, n)]:
+                raise ValueError("ambiguous program section boundary in damaged frame")
+            # A damaged operand closer must not turn into a shifted carrier
+            # that swallows the independently complete following END frame.
+            # The decoder still records the damaged command as unknown.
+            if (ordinary_frame and data[i + 1] in _OPERAND_TC
+                    and data[end:end + 4] == b"\x04\x34\x02\x04"):
+                i = end
+                continue
+        elif length in (4, 5, 6, 7) and b"\x34\x02\x04" in data[i + 1:min(i + length, n)]:
+            raise ValueError("ambiguous program section boundary in unapproved frame")
+        if data[i:i + 3] == b"\x34\x02\x04":
+            raise ValueError("unframed program section boundary")
+        i += 1
+    return data
+
+
 def pou_rows(b, cmap=None, *, text_encoding="cp1252"):
     'POU 본체 sec0 → [(instr, operand, comment)] 구조화 행 + 미확인 토큰. 텍스트 CSV 공용.'
     cmap = cmap or {}
-    sec0 = re.split(rb"\x34\x02\x04", b)[0]
+    sec0 = program_section(b)
     rows, unk_i, unk_d = [], set(), set()
     for instr, dev in decode_program(sec0, text_encoding=text_encoding):
         first = dev.split()[0] if dev else ""
@@ -1592,7 +1667,7 @@ def typed_note_records(b, cmap=None, *, ascii_types=False, framed_types=False,
     other printable source text; encoded length and raw text remain available
     for a caller's independent binding check. It does not validate GX import.
     """
-    sec0 = re.split(rb"\x34\x02\x04", b, maxsplit=1)[0]
+    sec0 = program_section(b)
     raw_notes = []
     i, n = 0, len(sec0)
     while i + 3 < n:
@@ -1665,9 +1740,9 @@ def typed_note_records(b, cmap=None, *, ascii_types=False, framed_types=False,
     return result
 
 
-def decode_pou(name, b, cmap=None):
+def decode_pou(name, b, cmap=None, *, text_encoding="cp1252"):
     """POU 본체 1개 → 사람이 읽는 텍스트 라인. (원본 형태 출력)"""
-    rows, unk_i, unk_d = pou_rows(b, cmap)
+    rows, unk_i, unk_d = pou_rows(b, cmap, text_encoding=text_encoding)
     lines = []
     if rows:
         lines.append("  step | instr  | operand")
@@ -1851,11 +1926,9 @@ def _publish_csv_directory(outdir, staged):
         raise OSError("No-replace directory rename is unsupported on this platform")
 
 
-def output_csv(arg, pous, cmap):
+def output_csv(arg, pous, cmap, *, text_encoding="cp1252", outdir=None):
     """GX Works2 IL CSV 출력. 디렉터리 출력은 새 경로에만 발행하고 없으면 stdout(MAIN)."""
     proj, plc = project_info(arg)
-    rest = [a for a in sys.argv[1:] if not a.startswith("-")]
-    outdir = rest[1] if len(rest) > 1 else None
     if outdir:
         target = Path(outdir)
         if not target.name or target.exists() or target.is_symlink():
@@ -1876,9 +1949,10 @@ def output_csv(arg, pous, cmap):
             staged = Path(temporary) / "candidate"
             staged.mkdir()
             for nm, leaf in pou_leaves:
-                rows, _, _ = pou_rows(pous[nm][1], cmap)
+                rows, _, _ = pou_rows(pous[nm][1], cmap, text_encoding=text_encoding)
                 with open(staged / leaf, "w", encoding="utf-16", newline="") as f:
-                    f.write(gx_csv_for_pou(nm, rows, proj, plc, typed_note_records(pous[nm][1], cmap)))
+                    f.write(gx_csv_for_pou(nm, rows, proj, plc,
+                                           typed_note_records(pous[nm][1], cmap, text_encoding=text_encoding)))
             with open(staged / "COMMENT.csv", "w", encoding="utf-16", newline="") as f:
                 lines = [_gx_row(proj), _gx_row("Device Name", "Comment")]
                 lines += [_gx_row(d, c) for d, c in sorted(cmap.items(), key=lambda kv: _dkey(kv[0]))]
@@ -1887,19 +1961,20 @@ def output_csv(arg, pous, cmap):
         print(f"GX CSV 출력: {outdir}/  (POU {len(pous)}개 + COMMENT.csv)")
     else:
         nm = "MAIN" if "MAIN" in pous else sorted(pous)[0]
-        rows, _, _ = pou_rows(pous[nm][1], cmap)
-        sys.stdout.write(gx_csv_for_pou(nm, rows, proj, plc, typed_note_records(pous[nm][1], cmap)))
+        rows, _, _ = pou_rows(pous[nm][1], cmap, text_encoding=text_encoding)
+        sys.stdout.write(gx_csv_for_pou(nm, rows, proj, plc,
+                                     typed_note_records(pous[nm][1], cmap, text_encoding=text_encoding)))
 
 
-def output_text(pous, cmap, reg, src):
-    print(f"# 래더 덤프 — {src}")
+def output_text(pous, cmap, reg, src, *, text_encoding="cp1252"):
+    print(f"# 래더 덤프: {src}")
     if reg:
         print(f"# POU 레지스트리(_hdb/{reg[0]}): count={reg[1]}, POU={reg[2]}")
     print(f"# 본체 디코드 {len(pous)}개: {', '.join(sorted(pous))}")
     all_unk_i, all_unk_d = set(), set()
     for nm in sorted(pous):
         num, b, _ = pous[nm]
-        lines, ui, ud = decode_pou(nm, b, cmap)
+        lines, ui, ud = decode_pou(nm, b, cmap, text_encoding=text_encoding)
         all_unk_i |= ui; all_unk_d |= ud
         print(f"\n## POU: {nm}  (_hdb/{num})")
         print("\n".join(lines) if lines else "  (빈 프로그램)")
@@ -1911,17 +1986,25 @@ def output_text(pous, cmap, reg, src):
             print(f"  - {d} = {c}")
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    as_csv = "--csv" in sys.argv
-    if not args:
-        print(__doc__); sys.exit(1)
-    streams = load_all_substreams(args[0])
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, add_help=False, allow_abbrev=False)
+    parser.add_argument("source", nargs="?")
+    parser.add_argument("outdir", nargs="?")
+    parser.add_argument("--csv", action="store_true")
+    parser.add_argument("--text-encoding", choices=("cp1252", "cp949", "auto"), default="cp1252")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+    if args.help or args.source is None:
+        parser.print_help()
+        raise SystemExit(1)
+    if args.outdir is not None and not args.csv:
+        parser.error("an output directory requires --csv")
+    streams = load_all_substreams(args.source)
     pous, cmap, reg = collect_pous(streams)
-    if as_csv:
-        output_csv(args[0], pous, cmap)
+    if args.csv:
+        output_csv(args.source, pous, cmap, text_encoding=args.text_encoding, outdir=args.outdir)
     else:
-        output_text(pous, cmap, reg, os.path.basename(args[0]))
+        output_text(pous, cmap, reg, os.path.basename(args.source), text_encoding=args.text_encoding)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,11 @@ jobs:
           $tree = git rev-parse 'HEAD^{tree}'
           & $python tools/verify_install.py --commit $commit --tree $tree --output "$env:RUNNER_TEMP/install-report.json"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:PYTHONUTF8 = '0'
+          & $python -B -m unittest discover -s packages/gxw-q/tests -p test_gxw_safety.py -q
+          $captureExit = $LASTEXITCODE
+          $env:PYTHONUTF8 = '1'
+          if ($captureExit) { exit $captureExit }
           $archives = Get-ChildItem "$env:RUNNER_TEMP/gx-build/artifacts" -Recurse -File
           $arguments = @()
           foreach ($archive in $archives) { $arguments += '--artifact'; $arguments += $archive.FullName }

@@ -95,10 +95,16 @@ class TypedAsciiNoteTests(unittest.TestCase):
         text = b"ASCII FIRST"
         length = len(text) + 4
         frame = bytes((length, 0x80, (length + 1) // 2)) + text + bytes((length,))
-        for invalid in (frame[:-1] + b"\x00", frame[:2] + b"\x01" + frame[3:],
-                        frame[:3] + b"\x01" + frame[4:]):
-            rows, _, _ = reader.pou_rows(b"\x00" * 16 + invalid + LD_M1)
-            self.assertEqual([("LD", "M1", ""), ("END", "", "")], rows)
+        for invalid, diagnostic in ((frame[:-1] + b"\x00", False),
+                                    (frame[:2] + b"\x01" + frame[3:], True),
+                                    (frame[:3] + b"\x01" + frame[4:], True)):
+            with self.subTest(invalid=invalid.hex()):
+                rows, unknown, _ = reader.pou_rows(b"\x00" * 16 + invalid + LD_M1)
+                self.assertEqual([("LD", "M1", ""), ("END", "", "")], rows[-2:])
+                self.assertNotIn("__STMT__", [row[0] for row in rows])
+                if diagnostic:
+                    self.assertEqual({"<i:text:statement>"}, unknown)
+                    self.assertEqual(("<i:text:statement>", "", ""), rows[0])
 
 
 if __name__ == "__main__":

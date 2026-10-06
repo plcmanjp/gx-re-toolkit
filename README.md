@@ -77,12 +77,26 @@ UTF-16. `typed_note_records(..., framed_types=True)` exposes the byte-length
 Note subtype relation, raw bytes and instruction attachment for independent
 binding checks. These options do not establish an official GX import result.
 
-These are Python API keyword arguments. The current `gxw-inspect` and
-`gxw-reference-ir` CLIs do not expose switches for the encoding policy or Note
-subtype options. Use `pou_rows(..., text_encoding="cp949")` or
-`gxw_reference_ir.build(path, text_encoding="cp949")` for explicit source-text
-decoding. Request the extended Note subtype view separately with
+Both `gxw-inspect` and `gxw-reference-ir` accept
+`--text-encoding {cp1252,cp949,auto}`, with `cp1252` as the compatibility default.
+The selected policy applies to text, stdout CSV, directory CSV, typed Note
+binding and Reference IR construction. Unknown options and invalid values are
+rejected before input reading. For example, use
+`gxw-inspect project.gxw --csv new-directory --text-encoding cp949` or
+`gxw-reference-ir project.gxw --output new.json --text-encoding cp949`.
+The Python APIs retain their `text_encoding` keyword. Note subtype options remain
+Python-only; request the extended view with
 `typed_note_records(..., text_encoding="cp949", framed_types=True)`.
+
+Reference IR `COMPLETE` describes decoded syntax and classified operand access;
+it does not establish a complete physical address range or official validation.
+Unknown or malformed instructions prevent `COMPLETE` even without operands.
+Reader findings are retained in additive `diagnostics`, with an additive
+`coverage.unknown_instructions` count; existing fields, state values and schema
+version remain unchanged. Recognized END/NOP and decoded dynamic addresses retain
+their existing behavior. Statement/Note text is decoded but omitted from the
+instruction-reference projection. The bounded source digest retains carrier
+header bytes and the complete first END trailer outside balanced frames.
 
 The examples below use the virtual environment from the build example. If you
 installed elsewhere, replace the environment path with your installation path.

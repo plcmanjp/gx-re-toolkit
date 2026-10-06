@@ -17,8 +17,8 @@ from gx3_core import (
     ProfileDecision,
     ProfileEvidence,
     SafeGx3Archive,
-    parse_xml,
 )
+from .config import resolve_config
 
 PROFILE_ID = "mitsubishi.gx3.fx5u.ladder"
 SUPPORTED_CONFIG_IDENTITIES = {
@@ -29,16 +29,7 @@ SUPPORTED_CONFIG_IDENTITIES = {
 
 
 def _config(archive: SafeGx3Archive):
-    configs = [name for name in archive.entries if name.casefold() == "config.xml"]
-    if len(configs) != 1:
-        raise ValueError("GX3 must contain exactly one Config.xml")
-    root = parse_xml(archive.read(configs[0]))
-    if root.tag == "Config":
-        return root
-    config = root.find(".//Config")
-    if config is None:
-        raise ValueError("Config.xml has no Config element")
-    return config
+    return resolve_config(archive)[1]
 
 
 def detect(archive: SafeGx3Archive) -> ProfileEvidence:
