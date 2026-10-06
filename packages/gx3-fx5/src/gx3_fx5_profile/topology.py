@@ -8,28 +8,16 @@ import sqlite3
 import unicodedata
 from typing import Any
 
-from gx3_core import Finding, SafeGx3Archive, parse_xml
+from gx3_core import Finding, SafeGx3Archive
+from .config import resolve_config
 
 
 def _digest(archive: SafeGx3Archive, name: str) -> str:
     return archive.digest(name)
 
 
-def _entry_ci(archive: SafeGx3Archive, expected: str) -> str:
-    matches = [
-        name for name in archive.entries if name.casefold() == expected.casefold()
-    ]
-    if len(matches) != 1:
-        raise ValueError(f"GX3 must contain exactly one {expected}")
-    return matches[0]
-
-
 def discover_project(archive: SafeGx3Archive) -> dict[str, Any]:
-    config_entry = _entry_ci(archive, "Config.xml")
-    root = parse_xml(archive.read(config_entry))
-    config = root if root.tag == "Config" else root.find(".//Config")
-    if config is None:
-        raise ValueError("Config.xml has no Config element")
+    config_entry, config = resolve_config(archive)
     title = config.get("Title", "")
     return {
         "cpu": config.get("Unit", ""),

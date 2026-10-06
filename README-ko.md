@@ -73,12 +73,24 @@ GXW Python 판독기는 Statement와 Note에 `text_encoding="cp949"` 또는
 원본 바이트와 명령 연결을 제공하여 소비자가 독립적으로 검증할 수 있습니다.
 이 옵션으로 공식 GX 가져오기 성공이 입증되지는 않습니다.
 
-이 옵션은 Python API의 키워드 인수입니다. 현재 `gxw-inspect`와
-`gxw-reference-ir` CLI에는 인코딩 정책이나 Note 타입 옵션을 지정하는 스위치가
-없습니다. 원본 텍스트의 인코딩을 명시하려면 `pou_rows(..., text_encoding="cp949")`
-또는 `gxw_reference_ir.build(path, text_encoding="cp949")`를 사용하세요.
-확장된 Note 타입 정보는
+`gxw-inspect`와 `gxw-reference-ir` 모두
+`--text-encoding {cp1252,cp949,auto}`를 제공하며 호환 기본값은 `cp1252`입니다.
+선택한 정책은 텍스트, stdout CSV, 디렉터리 CSV, typed Note 연결과 Reference IR
+생성에 적용됩니다. 알 수 없는 옵션과 잘못된 값은 입력을 읽기 전에 거부합니다.
+예를 들어 `gxw-inspect project.gxw --csv new-directory --text-encoding cp949` 또는
+`gxw-reference-ir project.gxw --output new.json --text-encoding cp949`를 사용하세요.
+Python API는 `text_encoding` 키워드를 유지합니다. Note 타입 옵션은 Python에서만
+제공하며 확장된 정보는
 `typed_note_records(..., text_encoding="cp949", framed_types=True)`로 별도 요청합니다.
+
+Reference IR의 `COMPLETE`는 문법 해석과 피연산자 접근 분류를 뜻하며, 전체 물리
+주소 범위의 확정이나 공식 검증을 뜻하지 않습니다. 미확인 또는 손상된 명령은
+피연산자가 없어도 `COMPLETE`를 막습니다. reader 진단은 추가 필드 `diagnostics`에
+유지하고 `coverage.unknown_instructions`에 미확인 명령 수를 제공합니다. 기존
+필드, 상태값과 schema 버전은 유지합니다. 알려진 END/NOP와 해석된 동적 주소의
+기존 동작도 유지합니다. Statement/Note 텍스트는 해석하지만 명령 참조 projection에는
+포함하지 않습니다. 경계가 정해진 source digest는 carrier 헤더 바이트와 완전한
+프레임 밖의 첫 END trailer 전체를 포함합니다.
 
 아래 예시는 빌드 예시의 가상환경을 사용합니다. 다른 환경에 설치했다면
 가상환경 경로를 해당 설치 경로로 바꾸세요.

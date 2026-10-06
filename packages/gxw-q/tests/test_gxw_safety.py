@@ -45,7 +45,8 @@ class EmptyOldTests(unittest.TestCase):
                     result = subprocess.run(
                         [sys.executable, *flags, "-m", "gxw_ladder_writer", str(source),
                          "--replace", "", "4e4557", "--apply", "--all", "--out", str(output)],
-                        cwd=directory, env=environment, capture_output=True, text=True, check=False,
+                        cwd=directory, env=environment, capture_output=True, text=True,
+                        encoding="utf-8", errors="strict", check=False,
                     )
                     self.assertEqual(7, result.returncode, result.stderr)
                     self.assertIn("OLD 빈 패턴", result.stdout)
@@ -63,7 +64,7 @@ class CsvPublicationTests(unittest.TestCase):
               mock.patch.object(READER, "pou_rows", return_value=([], set(), set())),
               mock.patch.object(READER, "typed_note_records", return_value=()),
               mock.patch.object(READER, "gx_csv_for_pou", side_effect=render)):
-            READER.output_csv(str(source), pous, {"X10": "synthetic comment"})
+            READER.output_csv(str(source), pous, {"X10": "synthetic comment"}, outdir=str(target))
 
     def test_new_directory_publishes_utf16_and_rerun_preserves_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

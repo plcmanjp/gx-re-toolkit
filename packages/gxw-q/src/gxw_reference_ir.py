@@ -251,6 +251,8 @@ def _coverage(operand: dict[str, Any], opcode: str, operands: list[dict[str, Any
 def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
                  profile_id: str = "mitsubishi.gxw.q.ladder") -> dict[str, Any]:
     occurrences: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    unknown_instructions = 0
     unknown_operands = 0
     total_operands = 0
     total_covered = 0
@@ -258,6 +260,16 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
         name = pou["name"]
         source_store = str(pou["source_store"])
         source_digest = str(pou["source_digest"])
+        instruction_findings = set(pou.get("unknown_instructions", ()))
+        instruction_findings.update(row[0] for row in pou["rows"] if row[0].startswith("<"))
+        unknown_instructions += sum(row[0].startswith("<") for row in pou["rows"])
+        if instruction_findings and not any(row[0].startswith("<") for row in pou["rows"]):
+            unknown_instructions += len(instruction_findings)
+        for kind, findings in (("instruction", instruction_findings),
+                               ("operand", set(pou.get("unknown_devices", ())))):
+            for finding in sorted(findings):
+                diagnostics.append({"pou": name, "source_store": source_store,
+                                    "kind": kind, "raw_token": finding})
         for sequence, row in enumerate(pou["rows"]):
             opcode, operand_text, comment = row
             if opcode in {"__STMT__", "__NOTE__"}:
@@ -298,11 +310,13 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
         "schema_version": SCHEMA_VERSION,
         "profile_id": profile_id,
         "input": {"sha256": input_sha256},
-        "analysis": {"state": "PARTIAL" if unknown_operands else "COMPLETE",
+        "analysis": {"state": "PARTIAL" if unknown_operands or diagnostics or unknown_instructions else "COMPLETE",
                      "official_validation": "NOT_RUN", "production_adoption": "NOT_GRANTED"},
         "coverage": {"occurrences": len(occurrences), "operands": total_operands,
                      "decoded_operands": total_operands - unknown_operands,
-                     "unknown_operands": unknown_operands},
+                     "unknown_operands": unknown_operands,
+                     "unknown_instructions": unknown_instructions},
+        "diagnostics": diagnostics,
         "occurrences": occurrences,
     }
 
@@ -324,10 +338,12 @@ def build(path: Path, *, text_encoding: str = "cp1252") -> dict[str, Any]:
     order_basis = "REGISTRY_ORDER" if registry else "NAME_SORT_FALLBACK"
     for name in ordered_names:
         source_store, body, _score = pous[name]
-        sec0 = re.split(rb"\x34\x02\x04", body, maxsplit=1)[0]
+        sec0 = reader.program_section(body)
         rows, _unknown_i, _unknown_d = reader.pou_rows(body, cmap, text_encoding=text_encoding)
         source_pous.append({"name": name, "source_store": source_store, "order_basis": order_basis,
-                            "source_digest": _sha256(sec0), "rows": rows})
+                            "source_digest": _sha256(sec0), "rows": rows,
+                            "unknown_instructions": sorted(_unknown_i),
+                            "unknown_devices": sorted(_unknown_d)})
     after = path.read_bytes()
     if len(after) > MAX_INPUT_BYTES:
         raise ReferenceIrError("INPUT_CAP")
@@ -357,12 +373,13 @@ def _publish_new(path: Path, payload: bytes) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("source", type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--text-encoding", choices=("cp1252", "cp949", "auto"), default="cp1252")
     args = parser.parse_args(argv)
     try:
-        report = build(args.source)
+        report = build(args.source, text_encoding=args.text_encoding)
         payload = (json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
         _publish_new(args.output, payload)
     except ReferenceIrError as error:

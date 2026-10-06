@@ -22,6 +22,13 @@ The exact FX5 detector tuples are `(FX5U, 528)`, `(FX5UJ, 529)`, and
 a separate identity is not inferred. A matching tuple does not establish complete
 decoding of a project or approval for target conversion.
 
+CPU identity requires exactly one Config node, either the XML root or a direct
+child of its wrapper. Multiple nodes, identical duplicates and nested candidates
+are `AMBIGUOUS` regardless of traversal order. R requires matching `Config.xml`
+and `!!Config.xml` bytes; FX5 checks the mirror when present. File disagreement
+and multiple nodes within one XML are distinct findings. These rules do not
+expand the supported CPU pairs.
+
 FX5 and R schemas are separate resources even when their versions and embedded
 identifiers match. Select the specified profile from its owning package; do not
 fall back across profiles. The FX5 finding
@@ -36,6 +43,12 @@ Using the Windows storage API does not authorize GX GUI execution or PLC access.
 Some original CLIs return usage code 1 rather than success code 0 for help.
 
 ## GXW reader boundaries
+
+The first program section ends at a complete END trailer outside balanced
+length-delimited frames. Marker-like operand or text bytes are not boundaries.
+An unframed marker or damaged frame containing a marker is rejected as ambiguous.
+Contact headers truncated at EOF retain unknown-instruction findings and do not
+raise an indexing exception. These findings also prevent Reference IR COMPLETE.
 
 For the recognized counted COMMENT format, `device_comment_pairs` binds declared
 device ranges to length-delimited UTF-16 text, including uppercase, numeric,

@@ -73,13 +73,16 @@ def _detect_profile(archive: SafeGx3Archive) -> tuple[dict[str, Any], list[dict[
         return {"profile_id": "mitsubishi.gx3.r04cpu.ladder", "decision": "AMBIGUOUS", "evidence": evidence}, [_finding("MINING_REQUIRED", "profile", "Config.xml", "dual Config evidence is missing or differs")]
     try:
         root = parse_xml(archive.entries["Config.xml"])
-        config = root if root.tag == "Config" else root.find(".//Config")
-        if config is None:
-            unit, unit_id = None, None
-        else:
-            unit, unit_id = config.attrib.get("Unit"), config.attrib.get("UnitId")
-    except (ValueError, AttributeError):
-        unit, unit_id = None, None
+        candidates = list(root.iter("Config"))
+        identities = sorted((node.get("Unit", ""), node.get("UnitId", "")) for node in candidates)
+        if len(candidates) != 1:
+            raise ValueError(f"Config node count={len(candidates)}; identities={identities!r}")
+        config = candidates[0]
+        if config is not root and not any(child is config for child in root):
+            raise ValueError(f"Config must be the root or a direct wrapper child; identities={identities!r}")
+        unit, unit_id = config.attrib.get("Unit"), config.attrib.get("UnitId")
+    except ValueError as error:
+        return {"profile_id": "mitsubishi.gx3.r04cpu.ladder", "decision": "AMBIGUOUS", "evidence": evidence}, [_finding("MINING_REQUIRED", "profile", "Config.xml", str(error))]
     if (unit, str(unit_id)) == ("R04", "4097"):
         decision, reason = "SUPPORTED", None
     elif unit is not None and unit_id is not None:
