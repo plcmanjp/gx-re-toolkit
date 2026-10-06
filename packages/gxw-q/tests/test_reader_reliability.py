@@ -97,6 +97,9 @@ class ReaderReliabilityTests(unittest.TestCase):
             reader.program_section(LD + bytes.fromhex("34 02 04") + LD)
         with self.assertRaisesRegex(ValueError, "boundary"):
             reader.program_section(LD + bytes.fromhex("07 e9 34 02 04 00 06") + END)
+        for marker in (0x80, 0x82):
+            with self.subTest(marker=marker), self.assertRaisesRegex(ValueError, "boundary"):
+                reader.program_section(LD + bytes((5, marker, 3, 0x41, 7)) + END)
 
     def test_unknown_operandless_instruction_is_partial_independently(self):
         result = project_rows(LD + bytes.fromhex("04 02 02 04 00 00 00"))

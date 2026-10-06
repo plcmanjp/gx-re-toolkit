@@ -25,6 +25,13 @@ class DfmovFrameTests(unittest.TestCase):
                 self.assertIn('<i:05:4c:0e>', ui)
                 self.assertNotIn('DFMOV', [r[0] for r in rows])
 
+    def test_torn_operand_closer_preserves_complete_section_boundary(self):
+        body = LD + HEADER + OPERANDS[:-1] + b'\x05' + END
+        self.assertEqual(body, reader.program_section(body + b'metadata'))
+        rows, ui, _ = reader.pou_rows(body)
+        self.assertIn('<i:05:4c:0e>', ui)
+        self.assertEqual(('END', '', ''), rows[-1])
+
     def test_leading_malformed_header_preserves_unknown_and_next_contact(self):
         rows, ui, _ = reader.pou_rows(HEADER[:-1] + b'\x06' + OPERANDS + LD + END)
         self.assertIn('<i:05:4c:0e>', ui)
@@ -53,6 +60,7 @@ class DfmovFrameTests(unittest.TestCase):
                 rows, ui, _ = reader.pou_rows(LD + candidate + END)
                 self.assertIn('<i:05:4c:0e>', ui)
                 self.assertNotIn('DFMOV', [r[0] for r in rows])
+                self.assertEqual(('END', '', ''), rows[-1])
 
     def test_unobserved_header_mode_is_unknown(self):
         rows, ui, _ = reader.pou_rows(LD + bytes.fromhex('05 4c 04 0e 05') + OPERANDS + END)

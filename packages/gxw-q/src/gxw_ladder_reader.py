@@ -1621,6 +1621,13 @@ def program_section(data):
                 continue
             if b"\x34\x02\x04" in data[i + 1:min(end, n)]:
                 raise ValueError("ambiguous program section boundary in damaged frame")
+            # A damaged operand closer must not turn into a shifted carrier
+            # that swallows the independently complete following END frame.
+            # The decoder still records the damaged command as unknown.
+            if (ordinary_frame and data[i + 1] in _OPERAND_TC
+                    and data[end:end + 4] == b"\x04\x34\x02\x04"):
+                i = end
+                continue
         elif length in (4, 5, 6, 7) and b"\x34\x02\x04" in data[i + 1:min(i + length, n)]:
             raise ValueError("ambiguous program section boundary in unapproved frame")
         if data[i:i + 3] == b"\x34\x02\x04":
