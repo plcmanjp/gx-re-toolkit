@@ -882,7 +882,8 @@ def _scan_to_operand(data, i, n, window=6):
             return -1
         if (_is_operand_frame(data, p, n)
                 or (data[p] in (4, 5, 6, 7) and p + data[p] <= n
-                    and data[p + data[p] - 1] == data[p] and data[p + 1] >= 0x80)):
+                    and data[p + data[p] - 1] == data[p] and data[p + 1] >= 0x80
+                    and data[p + 1] not in (0x80, 0x82))):
             # Retain an unknown descriptor as one operand finding rather than
             # searching its payload for a coincidental supported frame.
             return p

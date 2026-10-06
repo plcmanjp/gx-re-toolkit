@@ -60,6 +60,18 @@ class ReaderReliabilityTests(unittest.TestCase):
         self.assertEqual(("LD", "M0", ""), rows[-2])
         self.assertEqual("PARTIAL", project_rows(body)["analysis"]["state"])
 
+    def test_short_text_frames_remain_command_boundaries(self):
+        header = bytes.fromhex("0c 71 00 00 00") + b"BUFSND" + bytes((12,))
+        for marker, kind in ((0x80, "__STMT__"), (0x82, "__NOTE__")):
+            for width in (5, 6, 7):
+                with self.subTest(marker=marker, width=width):
+                    frame = bytes((width, marker, (width + 1) // 2)) + b"A" * (width - 4) + bytes((width,))
+                    self.assertEqual(-1, reader._scan_to_operand(frame, 0, len(frame)))
+                    body = LD + header + bytes.fromhex("04 a8 0a 04") + frame + LD + END
+                    rows, _, _ = reader.pou_rows(body)
+                    self.assertIn((kind, "A" * (width - 4), ""), rows)
+                    self.assertEqual(("LD", "M0", ""), rows[-2])
+
     def test_balanced_invalid_text_subtype_retains_diagnostic(self):
         for marker, kind in ((0x80, "statement"), (0x82, "note")):
             for subtype in (4, 5):
