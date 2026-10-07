@@ -35,6 +35,42 @@ F_OUT_MIL = (
     "as=[d{s=#:a=64:vt=nn}]}]}"
 )
 
+C_CONTACT_MIL = (
+    "V1:1:1:A:C:ms{el=[mc{op=lct{op=#:lt=l:ct=a:as=[as{vt=Abl}]}:"
+    "as=[d{s=#:a=5:vt=nn}]}]}"
+)
+C_OUT_MIL = (
+    "V1:1:1:1:OUT:C:K_1:ms{el=[mc{op=cl{op=#:ct=a:as=[as{vt=Abl}:as{vt=A16}]}:"
+    "as=[d{s=#:a=5:vt=nn}:c{s=#:v=3:si=s}]}]}"
+)
+C_RESET_MIL = (
+    "V1:1:1:RST:C:ms{el=[mc{op=cl{op=#:ct=a:as=[as{vt=Abl}]}:"
+    "as=[d{s=#:a=5:vt=nn}]}]}"
+)
+LC_CONTACT_MIL = C_CONTACT_MIL.replace("A:C:", "A:LC:")
+LC_OUT_MIL = C_OUT_MIL.replace("OUT:C:K_1:", "OUT:LC:K_2:").replace("A16", "A32")
+LC_RESET_MIL = C_RESET_MIL.replace("RST:C:", "RST:LC:")
+
+C_OUT_LDDB = (
+    "V1:5:1:1:7:1:3:a:M:OUT__16:C:K_1:cb{fg=fg{dim=4x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=7:vt=nn}]}:pos=0,0}:"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Abl}:as{vt=A16}]}:"
+    "args=[d{s=#:a=5:vt=nn}:c{s=#:v=3:si=s}]}:pos=1,0}]}}"
+)
+C_CONTACT_LDDB = (
+    "V1:4:1:1:1:1:a:C:c:M:cb{fg=fg{dim=2x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=5:vt=nn}]}:pos=0,0}:"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=10:vt=nn}]}:pos=1,0}]}}"
+)
+C_RESET_LDDB = (
+    "V1:4:1:1:3:1:a:M:RST:C:cb{fg=fg{dim=3x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=7:vt=nn}]}:pos=0,0}:"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=5:vt=nn}]}:pos=1,0}]}}"
+)
+LC_OUT_LDDB = C_OUT_LDDB.replace("OUT__16:C:K_1:", "OUT__32:LC:K_2:").replace("A16", "A32")
+LC_CONTACT_LDDB = C_CONTACT_LDDB.replace("a:C:", "a:LC:")
+LC_RESET_LDDB = C_RESET_LDDB.replace("RST:C:", "RST:LC:")
+
 S_OUT_LDDB = (
     "V1:4:1:1:1:4:a:M:c:SfcS:cb{fg=fg{dim=2x1:es=["
     "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=901:vt=nn}]}:pos=0,0}"
@@ -152,6 +188,122 @@ class InstalledSemanticsTests(unittest.TestCase):
                 self.assertEqual(_decode_mil(F_OUT_MIL.replace("a=64:", f"a={address}:"), 1), [
                     {"kind": "instruction", "opcode": "OUT", "operands": [f"F{address}"], "text": None}
                 ])
+
+    def test_counter_scalar_contact_output_reset(self) -> None:
+        for address in (0, 5, 255):
+            for mil, opcode, operands in (
+                (C_CONTACT_MIL, "LD", [f"C{address}"]),
+                (C_OUT_MIL, "OUT", [f"C{address}", "K3"]),
+                (C_RESET_MIL, "RST", [f"C{address}"]),
+            ):
+                with self.subTest(address=address, opcode=opcode):
+                    self.assertEqual(_decode_mil(mil.replace("a=5:", f"a={address}:"), 1), [
+                        {"kind": "instruction", "opcode": opcode, "operands": operands, "text": None}
+                    ])
+
+    def test_counter_scalar_near_matches_remain_unmined(self) -> None:
+        for mil in (
+            C_CONTACT_MIL.replace("a=5:", "a=-1:"),
+            C_CONTACT_MIL.replace("lt=l", "lt=o"),
+            C_CONTACT_MIL.replace("ct=a", "ct=p"),
+            C_CONTACT_MIL.replace("Abl", "A16"),
+            C_CONTACT_MIL.replace("vt=nn", "vt=UNMINED"),
+            C_OUT_MIL.replace("A16", "A32"),
+            C_OUT_MIL.replace("ct=a", "ct=p"),
+            C_OUT_MIL.replace("K_1:", "K_2:"),
+            C_OUT_MIL.replace("v=3:", "v=-1:"),
+            C_RESET_MIL.replace("RST:C:", "OUT:C:"),
+            C_OUT_MIL.replace("OUT:C:", "OUT:LC:"),
+            C_RESET_MIL.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=c{s=#:v=1}}")
+                .replace("RST:C:", "RST:C:Zs:"),
+        ):
+            with self.subTest(mil=mil):
+                with self.assertRaises(MiningRequired):
+                    _decode_mil(mil, 1)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["C"], ("scalar", (5,)))
+
+    def test_long_counter_scalar_contact_output_reset(self) -> None:
+        for address in (0, 5, 1023):
+            for mil, opcode, operands in (
+                (LC_CONTACT_MIL, "LD", [f"LC{address}"]),
+                (LC_OUT_MIL, "OUT", [f"LC{address}", "K3"]),
+                (LC_RESET_MIL, "RST", [f"LC{address}"]),
+            ):
+                with self.subTest(address=address, opcode=opcode):
+                    self.assertEqual(_decode_mil(mil.replace("a=5:", f"a={address}:"), 1), [
+                        {"kind": "instruction", "opcode": opcode, "operands": operands, "text": None}
+                    ])
+        for mil in (
+            LC_CONTACT_MIL.replace("lt=l", "lt=o"),
+            LC_RESET_MIL.replace("ct=a", "ct=p"),
+            LC_OUT_MIL.replace("A32", "A16"),
+            LC_OUT_MIL.replace("K_2:", "K_1:"),
+            LC_OUT_MIL.replace("v=3:", "v=-1:"),
+            LC_OUT_MIL.replace("OUT:LC:", "OUT:C:"),
+            LC_RESET_MIL.replace("a=5:", "a=-1:"),
+        ):
+            with self.subTest(mil=mil), self.assertRaises(MiningRequired):
+                _decode_mil(mil, 1)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["LC"], ("scalar", (5,)))
+
+    def test_counter_lddb_contact_output_reset(self) -> None:
+        for tag, contact, output, reset in (
+            ("C", C_CONTACT_LDDB, C_OUT_LDDB, C_RESET_LDDB),
+            ("LC", LC_CONTACT_LDDB, LC_OUT_LDDB, LC_RESET_LDDB),
+        ):
+            for raw, opcodes, operands in (
+                (contact, ["LD", "OUT"], [[tag+"5"], ["M10"]]),
+                (output, ["LD", "OUT"], [["M7"], [tag+"5", "K3"]]),
+                (reset, ["LD", "RST"], [["M7"], [tag+"5"]]),
+            ):
+                with self.subTest(tag=tag, raw=raw):
+                    rows=_decode_lddb(raw, 0, 2)
+                    self.assertEqual([row["opcode"] for row in rows], opcodes)
+                    self.assertEqual([row["operands"] for row in rows], operands)
+
+    def test_counter_lddb_near_matches_remain_unmined(self) -> None:
+        for raw in (
+            C_CONTACT_LDDB.replace("a:C:", "b:C:"),
+            C_CONTACT_LDDB.replace("ct=a", "ct=p"),
+            C_RESET_LDDB.replace("RST:C:", "c:C:"),
+            C_OUT_LDDB.replace("OUT__16", "OUT__32"),
+            C_OUT_LDDB.replace("K_1:", "K_2:"),
+            C_OUT_LDDB.replace("v=3:", "v=-1:"),
+            C_OUT_LDDB.replace("vt=A16", "vt=A32"),
+            LC_OUT_LDDB.replace("OUT__32", "OUT__16"),
+            LC_OUT_LDDB.replace("K_2:", "K_1:"),
+            LC_OUT_LDDB.replace("LC:K_2:", "D:K_2:"),
+            LC_OUT_LDDB.replace("vt=A32", "vt=A16"),
+            LC_RESET_LDDB.replace("a=5:", "a=-1:"),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_lddb(raw, 0, 2)
+
+    def test_counter_lddb_full_element_shape_rejects_extra_fields(self) -> None:
+        for fixture in (C_CONTACT_LDDB, C_OUT_LDDB, C_RESET_LDDB,
+                        LC_CONTACT_LDDB, LC_OUT_LDDB, LC_RESET_LDDB):
+            for raw in (
+                fixture.replace("ct=a:as=[", "ct=a:unknown=1:as=["),
+                fixture.replace("e{s=ce{", "e{s=ce{unknown=1:"),
+                fixture.replace("vt=Abl}", "vt=Abl:unknown=1}"),
+                fixture.replace("}:pos=", "}:unknown=1:pos="),
+            ):
+                with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                    _decode_lddb(raw, 0, 2)
+
+    def test_counter_lddb_indexed_operation_marker_remains_unmined(self) -> None:
+        for raw in (
+            C_CONTACT_LDDB.replace("a:C:", "Zs:a:C:"),
+            C_RESET_LDDB.replace("RST:C:", "Zs:RST:C:"),
+            C_OUT_LDDB.replace("OUT__16:C:", "Zs:OUT__16:C:"),
+            LC_CONTACT_LDDB.replace("a:LC:", "Zs:a:LC:"),
+            LC_RESET_LDDB.replace("RST:LC:", "Zs:RST:LC:"),
+            LC_OUT_LDDB.replace("OUT__32:LC:", "Zs:OUT__32:LC:"),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_lddb(raw, 0, 2)
 
     def test_f_out_keeps_unmined_forms_closed(self) -> None:
         for mil in (
