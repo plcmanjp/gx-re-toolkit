@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import struct
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -912,7 +913,9 @@ def _operand(
     prefix = token.split("\\", 1)[0]
     kind = (
         "constant"
-        if prefix.startswith(("K", "H")) and not re.match(r"K\d+[A-Z]", prefix)
+        if (
+            prefix.startswith(("K", "H")) and not re.match(r"K\d+[A-Z]", prefix)
+        ) or re.fullmatch(r"E(?:0|-?(?:[1-9][0-9]*|(?:0|[1-9][0-9]*)\.[0-9]*[1-9]))", token) is not None
         else "device"
     )
     return {
@@ -1134,10 +1137,36 @@ def _lddb_xy_spelling(tag: str, number: int) -> str:
     return f"{tag}{digits}"
 
 
+def _lddb_float32_spelling(raw: str) -> str:
+    """Recover normal or positive-zero E constants with seven-digit roundtrips."""
+    match = re.fullmatch(r"c\{s=#:v=([0-9A-F]{8})\}", raw)
+    if match is None:
+        raise MiningRequired("operand", "LDDB float32 constant shape is unmined")
+    bits = bytes.fromhex(match.group(1))
+    encoded = int.from_bytes(bits, "big")
+    exponent = (encoded >> 23) & 0xFF
+    if encoded != 0 and exponent in {0, 0xFF}:
+        raise MiningRequired("operand", "LDDB float32 constant class is unmined")
+    value = struct.unpack(">f", bits)[0]
+    for precision in range(1, 8):
+        spelling = format(value, f".{precision}g")
+        if re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?", spelling) is None:
+            continue
+        try:
+            roundtrip = struct.pack(">f", float(spelling))
+        except OverflowError:
+            continue
+        if roundtrip == bits:
+            return "E" + spelling
+    raise MiningRequired("operand", "LDDB float32 decimal spelling is unmined")
+
+
 def _lddb_scalar_operand(tag: str, raw: str) -> str:
     # These device/constant tags have exact LDDB shapes and radices that are
     # not interchangeable with the generic scalar grammar below.  Keep the
     # full serialization in the approval key so near-matches fail closed.
+    if tag == "E_2n":
+        return _lddb_float32_spelling(raw)
     if tag in {"F", "DX", "C", "LC", "SB", "SW"}:
         device = re.fullmatch(r"d\{s=#:a=(\d+):vt=nn\}", raw)
         if device is None:
@@ -1460,7 +1489,13 @@ def _lddb_validate_mined_scalar_context(
     marker: str,
 ) -> None:
     """Bind newly mined scalar tags to their observed instruction positions."""
-    if tag == "SW":
+    if tag == "E_2n":
+        approved = (
+            instruction == "EMOV" and marker == "EMOV" and signature == ("Ar32", "Ar32")
+            and operand_index == 0 and descriptors == ("E_2n", "D")
+            and re.fullmatch(r"c\{s=#:v=[0-9A-F]{8}\}", raw) is not None
+        )
+    elif tag == "SW":
         approved = (
             instruction == "MOV" and marker == "MOV" and signature == ("A16", "A16")
             and descriptors in {("D", "SW"), ("SW", "D")}
@@ -1647,7 +1682,12 @@ def _lddb_instruction_from_element(
             raise MiningRequired("operand", "LDDB RST__16 serialization is unmined")
     counts = _LDDB_OPERAND_COUNTS.get(instruction)
     exact_arity = (marker, element.pulse, element.signature, len(element.args))
-    if (counts is None or len(element.args) not in counts) and exact_arity not in _LDDB_EXACT_ARITIES:
+    exact_emov = (
+        instruction == "EMOV" and marker == "EMOV" and element.kind == "cl"
+        and element.pulse == "a" and element.signature == ("Ar32", "Ar32")
+        and len(element.args) == 2 and descriptors[cursor:cursor + 2] == ["E_2n", "D"]
+    )
+    if (counts is None or len(element.args) not in counts) and exact_arity not in _LDDB_EXACT_ARITIES and not exact_emov:
         raise MiningRequired("operand", "LDDB command argument count is unmined")
     operand_descriptor_start = cursor
     operands: list[str] = []
@@ -1665,6 +1705,19 @@ def _lddb_instruction_from_element(
         )
         operands.append(operand)
     descriptor_context = tuple(descriptors[operand_descriptor_start:cursor])
+    if any(tag == "E_2n" for tag, _index, _raw, _following in validation):
+        if indexed_operation_marker:
+            raise MiningRequired("opcode", "LDDB indexed EMOV constant is unmined")
+        exact_emov_element = (
+            "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Ar32}:as{vt=Ar32}]}:args=["
+            + ":".join(element.args)
+            + "]}:pos=" + str(element.x) + "," + str(element.y) + "}"
+        )
+        if (
+            element.raw != exact_emov_element or len(element.args) != 2
+            or re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", element.args[1]) is None
+        ):
+            raise MiningRequired("record", "LDDB EMOV constant element shape is unmined")
     if any(tag == "SW" for tag, _index, _raw, _following in validation):
         if indexed_operation_marker:
             raise MiningRequired("opcode", "LDDB indexed SW operation is unmined")

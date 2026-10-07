@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from gx3_fx5_profile.decoder import MiningRequired, _decode_lddb, _decode_mil, _format_operand
+from gx3_fx5_profile.decoder import MiningRequired, _decode_lddb, _decode_mil, _format_operand, _operand
 
 
 def database(path: Path, statements: tuple[str, ...]) -> bytes:
@@ -90,6 +91,13 @@ C_READ_LDDB = SW_MOV_LDDB.replace("MOV:D:SW:", "MOV:C:D:").replace("a=5:", "a=12
 LC_READ_MIL = C_READ_MIL.replace("MOV:C:D:", "MOV:LC:D:").replace("A16", "A32").replace("a=127:", "a=31:")
 LC_READ_LDDB = C_READ_LDDB.replace("MOV:C:D:", "DMOV:LC:D:").replace("A16", "A32").replace("a=127:", "a=31:")
 
+E_EMOV_LDDB = (
+    "V1:4:1:1:1:1:a:M:EMOV:E_2n:D:cb{fg=fg{dim=2x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=7:vt=nn}]}:pos=0,0}:"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Ar32}:as{vt=Ar32}]}:"
+    "args=[c{s=#:v=3F9D70A4}:d{s=#:a=22:vt=nn}]}:pos=1,0}]}}"
+)
+
 S_OUT_LDDB = (
     "V1:4:1:1:1:4:a:M:c:SfcS:cb{fg=fg{dim=2x1:es=["
     "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=901:vt=nn}]}:pos=0,0}"
@@ -149,6 +157,116 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
 
 
 class InstalledSemanticsTests(unittest.TestCase):
+    def test_emov_lddb_float32_plain_decimal_roundtrip(self) -> None:
+        for bits, token in (
+            ("3F9D70A4", "E1.23"), ("BF9D70A4", "E-1.23"),
+            ("3F000000", "E0.5"), ("3FC00000", "E1.5"), ("00000000", "E0"),
+        ):
+            with self.subTest(bits=bits):
+                raw = E_EMOV_LDDB.replace("3F9D70A4", bits)
+                self.assertEqual(_decode_lddb(raw, 0, 2), [
+                    {"kind": "instruction", "opcode": "LD", "operands": ["M7"], "text": None},
+                    {"kind": "instruction", "opcode": "EMOV", "operands": [token, "D22"], "text": None},
+                ])
+                self.assertEqual(struct.pack(">f", float(token[1:])).hex().upper(), bits)
+
+    def test_emov_lddb_float32_near_matches_remain_unmined(self) -> None:
+        for bits in (
+            "7F800000", "FF800000", "7FC00000", "FFFFFFFF",  # Inf/NaN.
+            "00000001", "007FFFFF", "80000000",  # Subnormal or negative zero.
+            "3F800001", "2EDBE6FF",  # Needs more than seven digits or scientific notation.
+            "3F9D70A", "03F9D70A4", "3f9d70a4", "3F9D70AG", "-3F9D70A4", "1.23",
+        ):
+            with self.subTest(bits=bits), self.assertRaises(MiningRequired):
+                _decode_lddb(E_EMOV_LDDB.replace("3F9D70A4", bits), 0, 2)
+        for raw in (
+            E_EMOV_LDDB.replace("EMOV:E_2n:D:", "EMOV:D:E_2n:"),
+            E_EMOV_LDDB.replace("EMOV:E_2n:D:", "EMOV:E_2n:E_2n:"),
+            E_EMOV_LDDB.replace("E_2n:", "E:"),
+            E_EMOV_LDDB.replace("E_2n:", "E_2n:E_2n:"),
+            E_EMOV_LDDB.replace("EMOV:", "MOV:"),
+            E_EMOV_LDDB.replace("EMOV:", "DEMOV:"),
+            E_EMOV_LDDB.replace("Ar32", "A32"),
+            E_EMOV_LDDB.replace("Ar32", "Ar64"),
+            E_EMOV_LDDB.replace("ct=a", "ct=p"),
+            E_EMOV_LDDB.replace("op=#", "op=0"),
+            E_EMOV_LDDB.replace("a=22:", "a=-1:"),
+            E_EMOV_LDDB.replace("s=#:a=22", "s=0:a=22"),
+            E_EMOV_LDDB.replace("c{s=#:v=3F9D70A4}", "c{s=#:v=3F9D70A4:si=u}"),
+            E_EMOV_LDDB.replace("c{s=#:v=3F9D70A4}", "M{b=c{s=#:v=3F9D70A4}:m=d{s=#:a=1:vt=nn}}")
+                .replace("E_2n:D:", "E_2n:Zs:D:"),
+            E_EMOV_LDDB.replace("d{s=#:a=22:vt=nn}", "M{b=d{s=#:a=22:vt=nn}:m=d{s=#:a=1:vt=nn}}")
+                .replace("E_2n:D:", "E_2n:D:Zs:"),
+            E_EMOV_LDDB.replace("d{s=#:a=22:vt=nn}", "M{b=d{s=#:a=22:vt=nn}:m=c{s=#:v=2}}")
+                .replace("E_2n:D:", "E_2n:D:Ks:"),
+            E_EMOV_LDDB.replace("EMOV:E_2n:", "Zs:EMOV:E_2n:"),
+            E_EMOV_LDDB.replace("ct=a:as=[", "ct=a:unknown=1:as=["),
+            E_EMOV_LDDB.replace("e{s=ce{", "e{s=ce{unknown=1:"),
+            E_EMOV_LDDB.replace("vt=Ar32}", "vt=Ar32:unknown=1}"),
+            E_EMOV_LDDB.replace("}:pos=", "}:unknown=1:pos="),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_lddb(raw, 0, 2)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["E_2n"], ("scalar", (1,)))
+
+    def test_installed_cli_emov_lddb_continuation_coverage_and_preservation(self) -> None:
+        for bits, token, expected in (
+            ("3F9D70A4", "E1.23", "decoded"),
+            ("BF9D70A4", "E-1.23", "decoded"),
+            ("00000000", "E0", "decoded"),
+            ("7FC00000", None, "unknown"),
+        ):
+            raw = E_EMOV_LDDB.replace("3F9D70A4", bits)
+            with self.subTest(bits=bits, expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "synthetic-emov.gx3"
+                synthetic_gx3(source, lddb_source=raw)
+                before = source.read_bytes()
+                output = root / "output"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                     "--phase2-output", str(output)],
+                    cwd=root, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                records = ir["pous"][0]["records"]
+                if expected == "decoded":
+                    self.assertEqual([
+                        (record["kind"], record["opcode"], [operand["raw_token"] for operand in record["operands"]])
+                        for record in records
+                    ], [("instruction", "LD", ["M7"]), ("instruction", "EMOV", [token]),
+                        ("continuation", None, ["D22"]), ("instruction", "END", [])])
+                    self.assertEqual([
+                        (operand["kind"], operand["value"], operand["raw_token"])
+                        for record in records for operand in record["operands"]
+                    ], [("device", "M7", "M7"), ("constant", token, token), ("device", "D22", "D22")])
+                    self.assertEqual([record["status"] for record in records], ["decoded"] * 4)
+                    self.assertEqual([record["continues_record_id"] for record in records],
+                                     [None, None, records[1]["record_id"], None])
+                    self.assertEqual(ir["coverage"]["record"], {"total": 4, "decoded": 4, "partial": 0, "unknown": 0})
+                else:
+                    self.assertEqual([record["status"] for record in records], ["unknown", "unknown", "decoded"])
+                    self.assertEqual(ir["coverage"]["record"], {"total": 3, "decoded": 1, "partial": 0, "unknown": 2})
+                    self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED" for item in ir["pous"][0]["findings"]))
+                self.assertEqual(source.read_bytes(), before)
+
+    def test_e_constant_classification_requires_canonical_plain_decimal(self) -> None:
+        for token in ("E1.23", "E-1.23", "E0", "E0.5"):
+            with self.subTest(token=token):
+                operand = _operand(token, 0, {}, {}, set(), None)
+                self.assertEqual((operand["kind"], operand["value"], operand["raw_token"]),
+                                 ("constant", token, token))
+        for token in (
+            "ER1.23", "ED1.23", "E_2n", "E", "E1e3", "E+1.23", "E01.23",
+            "E1.", "E.5", "E-0", "E0.0", "E1.230", "E1.23\\D22", "E1.23Z1",
+        ):
+            with self.subTest(token=token):
+                operand = _operand(token, 0, {}, {}, set(), None)
+                self.assertEqual((operand["kind"], operand["value"], operand["raw_token"]),
+                                 ("device", token, token))
+
     def test_s_lddb_coil_uses_canonical_decimal_addresses(self) -> None:
         for address in (0, 1, 255, 256, 4095):
             with self.subTest(address=address):
