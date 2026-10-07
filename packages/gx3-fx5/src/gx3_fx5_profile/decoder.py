@@ -414,6 +414,22 @@ def _format_source_authorized_operand(
     if shape == "scalar" and len(numbers) == 1:
         number = numbers[0]
         if (
+            marker == "OUT"
+            and logic_type == ""
+            and not signature.pulse
+            and operand_index == 0
+            and vts == ("Abl",)
+            and kinds == ("d",)
+            and all_tags == ("F",)
+            and tags[:1] == ["F"]
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                rf"as=\[d\{{s=#:a={number}:vt=nn\}}\]\}}",
+                record,
+            )
+        ):
+            return f"F{number}", 1
+        if (
             marker == "MOV"
             and operand_index == 0
             and vts == ("A32", "A32")

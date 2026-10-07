@@ -30,6 +30,11 @@ MOV_MIL = (
     "as=[d{s=0:a=5:vt=nn}:d{s=0:a=10:vt=nn}]}]}"
 )
 
+F_OUT_MIL = (
+    "V1:1:1:1:OUT:F:ms{el=[mc{op=cl{op=#:ct=a:as=[as{vt=Abl}]}:"
+    "as=[d{s=#:a=64:vt=nn}]}]}"
+)
+
 
 def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = False,
                   mil_mov: bool = False, mil_source: str = MOV_MIL) -> None:
@@ -75,6 +80,61 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
 
 
 class InstalledSemanticsTests(unittest.TestCase):
+    def test_f_out_scalar_decimal_boundary_addresses(self) -> None:
+        for address in (0, 63, 64, 127):
+            with self.subTest(address=address):
+                self.assertEqual(_decode_mil(F_OUT_MIL.replace("a=64:", f"a={address}:"), 1), [
+                    {"kind": "instruction", "opcode": "OUT", "operands": [f"F{address}"], "text": None}
+                ])
+
+    def test_f_out_keeps_unmined_forms_closed(self) -> None:
+        for mil in (
+            F_OUT_MIL.replace("a=64:", "a=-1:"),
+            F_OUT_MIL.replace("Abl", "A16"),
+            F_OUT_MIL.replace("ct=a", "ct=p"),
+            F_OUT_MIL.replace("OUT:F:", "OUT:UNMINED:"),
+            F_OUT_MIL.replace("OUT:F:", "MOV:F:"),
+            F_OUT_MIL.replace("vt=nn", "vt=UNMINED"),
+            F_OUT_MIL.replace("d{s=#:a=64:vt=nn}", "M{b=d{s=#:a=64:vt=nn}:m=c{s=#:v=2}}")
+                .replace("OUT:F:", "OUT:F:Ks:"),
+        ):
+            with self.subTest(mil=mil):
+                with self.assertRaises(MiningRequired):
+                    _decode_mil(mil, 1)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["F"], ("scalar", (64,)))
+
+    def test_installed_cli_f_out_preserves_input_and_unknown_records(self) -> None:
+        for mil, expected in ((F_OUT_MIL, "decoded"),
+                              (F_OUT_MIL.replace("Abl", "UNMINED"), "unknown")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "synthetic-f.gx3"
+                synthetic_gx3(source, mil_mov=True, mil_source=mil)
+                before = source.read_bytes()
+                output = root / "output"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                     "--phase2-output", str(output)],
+                    cwd=root, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                records = ir["pous"][0]["records"]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["status"], expected)
+                self.assertEqual(ir["coverage"]["record"], {
+                    "total": 1, "decoded": int(expected == "decoded"),
+                    "partial": 0, "unknown": int(expected == "unknown"),
+                })
+                if expected == "decoded":
+                    self.assertEqual(records[0]["opcode"], "OUT")
+                    self.assertEqual(records[0]["operands"][0]["raw_token"], "F64")
+                else:
+                    self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED"
+                                        for item in ir["pous"][0]["findings"]))
+                self.assertEqual(source.read_bytes(), before)
+
     def test_w_scalar_uses_hexadecimal_addresses(self) -> None:
         for address, token in ((0, "W0"), (0xFF, "WFF"), (0x100, "W100")):
             with self.subTest(address=address):
