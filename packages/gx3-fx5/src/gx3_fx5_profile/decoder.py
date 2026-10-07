@@ -170,6 +170,7 @@ SCALAR_TAGS = frozenset(
         "SM",
         "ST",
         "T",
+        "W",
         "X",
         "Y",
         "Z",
@@ -316,13 +317,15 @@ def _format_operand(
     if shape != "scalar" or not tags or tags[0] not in SCALAR_TAGS or len(numbers) != 1:
         raise MiningRequired("operand", "MIL scalar operand type is unmined")
     prefix = {"K_1": "K", "K_2": "K", "H_1": "H", "SfcS": "S"}.get(tags[0], tags[0])
+    if prefix == "W" and numbers[0] < 0:
+        raise MiningRequired("operand", "MIL W address is negative")
     if prefix in {"X", "Y"}:
         # Issue #30 official MIL anchors: 1057/1059/1060 -> X421/X423/X424.
         number = f"{numbers[0]:X}"
         if re.fullmatch(r"[0-7]+", number) is None:
             raise MiningRequired("operand", "MIL X/Y source spelling is invalid")
     else:
-        number = f"{numbers[0]:X}" if prefix in {"B", "H"} else str(numbers[0])
+        number = f"{numbers[0]:X}" if prefix in {"B", "H", "W"} else str(numbers[0])
     return f"{prefix}{number}", 1
 
 

@@ -31,7 +31,8 @@ MOV_MIL = (
 )
 
 
-def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = False, mil_mov: bool = False) -> None:
+def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = False,
+                  mil_mov: bool = False, mil_source: str = MOV_MIL) -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         ladder_rows = (
@@ -44,7 +45,7 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
         ladder = database(root / "ladder.db", (
             "CREATE TABLE LadderBlocks(id TEXT,pos REAL,blocktype INTEGER,data TEXT)", *ladder_rows,
         ))
-        mil_rows = ("INSERT INTO MIL VALUES('block-a',0,'" + MOV_MIL + "')",) if mil_mov else ()
+        mil_rows = ("INSERT INTO MIL VALUES('block-a',0,'" + mil_source + "')",) if mil_mov else ()
         mil = database(root / "mil.db", ("CREATE TABLE MIL(id TEXT,pos REAL,data TEXT)", *mil_rows))
         step_rows = () if mil_mov else (
             "INSERT INTO T_Block VALUES(1,'block-b')",
@@ -74,6 +75,56 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
 
 
 class InstalledSemanticsTests(unittest.TestCase):
+    def test_w_scalar_uses_hexadecimal_addresses(self) -> None:
+        for address, token in ((0, "W0"), (0xFF, "WFF"), (0x100, "W100")):
+            with self.subTest(address=address):
+                self.assertEqual(_format_operand(["W"], ("scalar", (address,))), (token, 1))
+
+    def test_w_does_not_admit_unmined_forms(self) -> None:
+        for tags, operand in (
+            (["W"], ("scalar", (-1,))),
+            (["W"], ("scalar", (255, 1))),
+            (["W", "Zs"], ("k_device", (255, 1))),
+            (["SW"], ("scalar", (255,))),
+            (["UNMINED"], ("scalar", (255,))),
+        ):
+            with self.subTest(tags=tags, operand=operand):
+                with self.assertRaises(MiningRequired):
+                    _format_operand(tags, operand)
+        with self.assertRaises(MiningRequired):
+            _decode_mil(MOV_MIL.replace("MOV:D:D", "MOV:W:D").replace("A16", "UNMINED"), 1)
+
+    def test_installed_cli_w_mov_both_directions_preserves_input(self) -> None:
+        for address in (0xFF, 0x100):
+            for source_tag, target_tag in (("W", "D"), ("D", "W")):
+                with self.subTest(address=address, direction=(source_tag, target_tag)):
+                    mil = MOV_MIL.replace("MOV:D:D", f"MOV:{source_tag}:{target_tag}")
+                    mil = mil.replace("a=5:", f"a={address}:").replace("a=10:", f"a={address}:")
+                    tokens = [f"W{address:X}" if tag == "W" else f"D{address}"
+                              for tag in (source_tag, target_tag)]
+                    self.assertEqual(_decode_mil(mil, 1), [
+                        {"kind": "instruction", "opcode": "MOV", "operands": tokens, "text": None}
+                    ])
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        source = root / "synthetic-w.gx3"
+                        synthetic_gx3(source, mil_mov=True, mil_source=mil)
+                        before = source.read_bytes()
+                        output = root / "output"
+                        result = subprocess.run(
+                            [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                             "--phase2-output", str(output)],
+                            cwd=root, capture_output=True, text=True, timeout=30,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                        records = ir["pous"][0]["records"]
+                        self.assertEqual([item["operands"][0]["raw_token"] for item in records], tokens)
+                        self.assertEqual(records[1]["continues_record_id"], records[0]["record_id"])
+                        self.assertEqual(ir["coverage"]["record"],
+                                         {"total": 2, "decoded": 2, "partial": 0, "unknown": 0})
+                        self.assertEqual(source.read_bytes(), before)
+
     def test_mil_operand_order_radix_width_and_unknown_signature(self) -> None:
         source = MOV_MIL
         self.assertEqual(_decode_mil(source, 1), [
