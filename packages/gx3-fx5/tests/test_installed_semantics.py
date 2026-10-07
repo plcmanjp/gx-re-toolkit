@@ -11,7 +11,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from gx3_fx5_profile.decoder import MiningRequired, _decode_mil, _format_operand
+from gx3_fx5_profile.decoder import MiningRequired, _decode_lddb, _decode_mil, _format_operand
 
 
 def database(path: Path, statements: tuple[str, ...]) -> bytes:
@@ -35,9 +35,17 @@ F_OUT_MIL = (
     "as=[d{s=#:a=64:vt=nn}]}]}"
 )
 
+S_OUT_LDDB = (
+    "V1:4:1:1:1:4:a:M:c:SfcS:cb{fg=fg{dim=2x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=901:vt=nn}]}:pos=0,0}"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=1:vt=nn}]}:pos=1,0}"
+    "]}}"
+)
+
 
 def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = False,
-                  mil_mov: bool = False, mil_source: str = MOV_MIL) -> None:
+                  mil_mov: bool = False, mil_source: str = MOV_MIL,
+                  lddb_source: str | None = None) -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         ladder_rows = (
@@ -47,6 +55,11 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
             "INSERT INTO LadderBlocks VALUES('block-b',1,5,'V1:0:end{type=end:dim=1x1}')" if not unknown else
             "INSERT INTO LadderBlocks VALUES('block-b',1,5,'V1:0:unknown')",
         )
+        if lddb_source is not None:
+            ladder_rows = (
+                "INSERT INTO LadderBlocks VALUES('block-a',0,0,'" + lddb_source + "')",
+                "INSERT INTO LadderBlocks VALUES('block-b',1,5,'V1:0:end{type=end:dim=1x1}')",
+            )
         ladder = database(root / "ladder.db", (
             "CREATE TABLE LadderBlocks(id TEXT,pos REAL,blocktype INTEGER,data TEXT)", *ladder_rows,
         ))
@@ -61,6 +74,7 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
             "CREATE TABLE T_Step(Pos INTEGER,BlockID TEXT,MilID TEXT,StepSize INTEGER)",
             "INSERT INTO T_Block VALUES(0,'block-a')",
             "INSERT INTO T_Step VALUES(0,'block-a','',1)",
+            *(("INSERT INTO T_Step VALUES(1,'block-a','',1)",) if lddb_source is not None else ()),
             *step_rows,
         ))
         name = "MAIN".encode("utf-16le") + b"\x00\x00"
@@ -80,6 +94,58 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
 
 
 class InstalledSemanticsTests(unittest.TestCase):
+    def test_s_lddb_coil_uses_canonical_decimal_addresses(self) -> None:
+        for address in (0, 1, 255, 256, 4095):
+            with self.subTest(address=address):
+                source = S_OUT_LDDB.replace("a=1:", f"a={address}:")
+                self.assertEqual(_decode_lddb(source, 0, 2), [
+                    {"kind": "instruction", "opcode": "LD", "operands": ["M901"], "text": None},
+                    {"kind": "instruction", "opcode": "OUT", "operands": [f"S{address}"], "text": None},
+                ])
+
+    def test_s_lddb_unmined_shapes_and_descriptors_stay_closed(self) -> None:
+        for source in (
+            S_OUT_LDDB.replace("SfcS:", "UNMINED:"),
+            S_OUT_LDDB.replace("SfcS:", "SfcS:UNMINED:"),
+            S_OUT_LDDB.replace("a=1:vt=nn", "a=1:vt=UNMINED"),
+            S_OUT_LDDB.replace("d{s=#:a=1:vt=nn}", "M{b=d{s=#:a=1:vt=nn}:m=c{s=#:v=2}}"),
+            S_OUT_LDDB.replace("pos=1,0", "pos=2,0"),
+        ):
+            with self.subTest(source=source), self.assertRaises(MiningRequired):
+                _decode_lddb(source, 0, 2)
+
+    def test_installed_cli_s_lddb_preserves_input_and_unknown_records(self) -> None:
+        for source_text, expected in (
+            (S_OUT_LDDB, "decoded"),
+            (S_OUT_LDDB.replace("a=1:vt=nn", "a=1:vt=UNMINED"), "unknown"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "synthetic-s.gx3"
+                synthetic_gx3(source, lddb_source=source_text)
+                before = source.read_bytes()
+                output = root / "output"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                     "--phase2-output", str(output)],
+                    cwd=root, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                records = ir["pous"][0]["records"]
+                self.assertEqual([record["status"] for record in records], [expected, expected, "decoded"])
+                if expected == "decoded":
+                    self.assertEqual(records[1]["opcode"], "OUT")
+                    self.assertEqual(records[1]["operands"][0]["raw_token"], "S1")
+                else:
+                    self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED"
+                                        for item in ir["pous"][0]["findings"]))
+                self.assertEqual(ir["coverage"]["record"], {
+                    "total": 3, "decoded": 3 if expected == "decoded" else 1,
+                    "partial": 0, "unknown": 0 if expected == "decoded" else 2,
+                })
+                self.assertEqual(source.read_bytes(), before)
+
     def test_f_out_scalar_decimal_boundary_addresses(self) -> None:
         for address in (0, 63, 64, 127):
             with self.subTest(address=address):

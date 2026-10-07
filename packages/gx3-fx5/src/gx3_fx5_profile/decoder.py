@@ -1082,7 +1082,8 @@ def _lddb_scalar_operand(tag: str, raw: str) -> str:
     if tag in {"X", "Y"}:
         return _lddb_xy_spelling(tag, number)
     if tag in _LDDB_SCALAR_TAGS:
-        return f"{tag}{number}"
+        prefix = "S" if tag == "SfcS" else tag
+        return f"{prefix}{number}"
     raise MiningRequired("operand", "LDDB operand tag is unmined")
 
 
