@@ -71,6 +71,19 @@ LC_OUT_LDDB = C_OUT_LDDB.replace("OUT__16:C:K_1:", "OUT__32:LC:K_2:").replace("A
 LC_CONTACT_LDDB = C_CONTACT_LDDB.replace("a:C:", "a:LC:")
 LC_RESET_LDDB = C_RESET_LDDB.replace("RST:C:", "RST:LC:")
 
+SB_CONTACT_MIL = C_CONTACT_MIL.replace("A:C:", "A:SB:")
+SB_OUT_MIL = F_OUT_MIL.replace("OUT:F:", "OUT:SB:").replace("a=64:", "a=5:")
+SB_CONTACT_LDDB = C_CONTACT_LDDB.replace("a:C:", "a:SB:")
+SB_OUT_LDDB = C_CONTACT_LDDB.replace("a:C:c:M:", "a:M:c:SB:").replace("a=10:", "a=5:")
+
+SW_MOV_MIL = MOV_MIL.replace("MOV:D:D:", "MOV:D:SW:").replace("op=0", "op=#").replace("s=0", "s=#")
+SW_MOV_LDDB = (
+    "V1:4:1:1:1:1:a:M:MOV:D:SW:cb{fg=fg{dim=2x1:es=["
+    "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=7:vt=nn}]}:pos=0,0}:"
+    "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=A16}:as{vt=A16}]}:"
+    "args=[d{s=#:a=5:vt=nn}:d{s=#:a=10:vt=nn}]}:pos=1,0}]}}"
+)
+
 S_OUT_LDDB = (
     "V1:4:1:1:1:4:a:M:c:SfcS:cb{fg=fg{dim=2x1:es=["
     "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=901:vt=nn}]}:pos=0,0}"
@@ -188,6 +201,262 @@ class InstalledSemanticsTests(unittest.TestCase):
                 self.assertEqual(_decode_mil(F_OUT_MIL.replace("a=64:", f"a={address}:"), 1), [
                     {"kind": "instruction", "opcode": "OUT", "operands": [f"F{address}"], "text": None}
                 ])
+
+    def test_sb_scalar_ld_out_hex_boundary_addresses(self) -> None:
+        # Canonical hexadecimal spelling omits optional leading zeroes.
+        for address, token in ((0, "SB0"), (5, "SB5"), (255, "SBFF"), (256, "SB100")):
+            for mil, opcode in ((SB_CONTACT_MIL, "LD"), (SB_OUT_MIL, "OUT")):
+                with self.subTest(route="MIL", address=address, opcode=opcode):
+                    self.assertEqual(_decode_mil(mil.replace("a=5:", f"a={address}:"), 1), [
+                        {"kind": "instruction", "opcode": opcode, "operands": [token], "text": None}
+                    ])
+            for fixture, operands in (
+                (SB_CONTACT_LDDB, [[token], ["M10"]]),
+                (SB_OUT_LDDB, [[f"M{address}"], [token]]),
+            ):
+                with self.subTest(route="LDDB", address=address, fixture=fixture):
+                    rows = _decode_lddb(fixture.replace("a=5:", f"a={address}:"), 0, 2)
+                    self.assertEqual([row["opcode"] for row in rows], ["LD", "OUT"])
+                    self.assertEqual([row["operands"] for row in rows], operands)
+
+    def test_lddb_string_literal_sb_is_not_a_device_tag(self) -> None:
+        raw = (
+            'V1:4:1:1:1:1:a:M:$MOV:String:SB:"SB":D:cb{fg=fg{dim=2x1:es=['
+            'e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=7:vt=nn}]}:pos=0,0}:'
+            'e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Ass}:as{vt=Ass}]}:'
+            'args=[c{s=#:v=#:t=#}:d{s=#:a=10:vt=nn}]}:pos=1,0}]}}'
+        )
+        self.assertEqual(_decode_lddb(raw, 0, 2), [
+            {"kind": "instruction", "opcode": "LD", "operands": ["M7"], "text": None},
+            {"kind": "instruction", "opcode": "$MOV", "operands": ['"SB"', "D10"], "text": None},
+        ])
+        self.assertEqual(_decode_lddb(raw.replace('String:SB:"SB":', 'String:SW:"SW":'), 0, 2), [
+            {"kind": "instruction", "opcode": "LD", "operands": ["M7"], "text": None},
+            {"kind": "instruction", "opcode": "$MOV", "operands": ['"SW"', "D10"], "text": None},
+        ])
+
+    def test_sw_scalar_mov_both_directions_hex_boundary_addresses(self) -> None:
+        for address, token in ((0, "SW0"), (255, "SWFF"), (256, "SW100")):
+            for reverse in (False, True):
+                operand_address = 5 if reverse else 10
+                operands = [token, "D10"] if reverse else ["D5", token]
+                for route, fixture in (("MIL", SW_MOV_MIL), ("LDDB", SW_MOV_LDDB)):
+                    raw = fixture.replace("MOV:D:SW:", "MOV:SW:D:") if reverse else fixture
+                    raw = raw.replace(f"a={operand_address}:", f"a={address}:")
+                    with self.subTest(route=route, address=address, reverse=reverse):
+                        rows = _decode_mil(raw, 1) if route == "MIL" else _decode_lddb(raw, 0, 2)
+                        expected = [{"kind": "instruction", "opcode": "MOV", "operands": operands, "text": None}]
+                        if route == "LDDB":
+                            expected.insert(0, {"kind": "instruction", "opcode": "LD", "operands": ["M7"], "text": None})
+                        self.assertEqual(rows, expected)
+
+    def test_sw_mov_near_matches_remain_unmined(self) -> None:
+        for route, fixture in (("MIL", SW_MOV_MIL), ("LDDB", SW_MOV_LDDB)):
+            for reverse in (False, True):
+                raw = fixture.replace("MOV:D:SW:", "MOV:SW:D:") if reverse else fixture
+                for altered in (
+                    raw.replace("a=5:", "a=-1:"),
+                    raw.replace("a=10:", "a=-1:"),
+                    raw.replace("A16", "A32"),
+                    raw.replace("vt=A16}", "vt=A16:unknown=1}"),
+                    raw.replace("ct=a", "ct=p"),
+                    raw.replace("MOV:", "DMOV:"),
+                    raw.replace(":SW:", ":SW:SW:"),
+                    raw.replace(":D:", ":SW:"),
+                    raw.replace("vt=nn", "vt=UNMINED"),
+                    raw.replace("s=#:a=10", "s=0:a=10"),
+                    raw.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=c{s=#:v=2}}"),
+                    raw.replace("d{s=#:a=10:vt=nn}", "M{b=d{s=#:a=10:vt=nn}:m=d{s=#:a=1:vt=nn}}")
+                        .replace(":SW:", ":SW:Zs:"),
+                    raw.replace("ct=a:as=[", "ct=a:unknown=1:as=["),
+                ):
+                    with self.subTest(route=route, reverse=reverse, raw=altered), self.assertRaises(MiningRequired):
+                        if route == "MIL":
+                            _decode_mil(altered, 1)
+                        else:
+                            _decode_lddb(altered, 0, 2)
+        for raw in (SB_CONTACT_MIL.replace(":SB:", ":SW:"), SB_OUT_MIL.replace(":SB:", ":SW:")):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_mil(raw, 1)
+        for raw in (
+            SB_CONTACT_LDDB.replace(":SB:", ":SW:"),
+            SB_OUT_LDDB.replace(":SB:", ":SW:"),
+            SW_MOV_LDDB.replace("MOV:D:SW:", "Zs:MOV:D:SW:"),
+            SW_MOV_LDDB.replace("e{s=ce{", "e{s=ce{unknown=1:"),
+            SW_MOV_LDDB.replace("}:pos=", "}:unknown=1:pos="),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_lddb(raw, 0, 2)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["SW"], ("scalar", (255,)))
+
+    def test_installed_cli_sw_mov_routes_preserve_source_and_unknown_records(self) -> None:
+        for route, fixture in (("MIL", SW_MOV_MIL), ("LDDB", SW_MOV_LDDB)):
+            for reverse in (False, True):
+                for expected in ("decoded", "unknown"):
+                    raw = fixture.replace("MOV:D:SW:", "MOV:SW:D:") if reverse else fixture
+                    raw = raw.replace("a=5:" if reverse else "a=10:", "a=256:")
+                    if expected == "unknown":
+                        raw = raw.replace("A16", "A32")
+                    with self.subTest(route=route, reverse=reverse, expected=expected), tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        source = root / "synthetic-sw.gx3"
+                        if route == "MIL":
+                            synthetic_gx3(source, mil_mov=True, mil_source=raw)
+                        else:
+                            synthetic_gx3(source, lddb_source=raw)
+                        before = source.read_bytes()
+                        output = root / "output"
+                        result = subprocess.run(
+                            [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                             "--phase2-output", str(output)],
+                            cwd=root, capture_output=True, text=True, timeout=30,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                        records = ir["pous"][0]["records"]
+                        if expected == "decoded":
+                            # Match the existing MIL/DMOV Neutral IR continuation contract:
+                            # each operand has its own row, linked to the MOV base row.
+                            tokens = ["SW100", "D10"] if reverse else ["D5", "SW100"]
+                            expected_rows = [
+                                ("instruction", "MOV", [tokens[0]]),
+                                ("continuation", None, [tokens[1]]),
+                            ]
+                            base_index = 0 if route == "MIL" else 1
+                            if route == "LDDB":
+                                expected_rows.insert(0, ("instruction", "LD", ["M7"]))
+                                expected_rows.append(("instruction", "END", []))
+                            self.assertEqual([
+                                (record["kind"], record["opcode"],
+                                 [operand["raw_token"] for operand in record["operands"]])
+                                for record in records
+                            ], expected_rows)
+                            self.assertEqual([record["status"] for record in records],
+                                             ["decoded"] * len(expected_rows))
+                            self.assertEqual([record["continues_record_id"] for record in records],
+                                             [None, records[0]["record_id"]] if route == "MIL"
+                                             else [None, None, records[base_index]["record_id"], None])
+                            self.assertEqual(ir["coverage"]["record"], {
+                                "total": len(expected_rows), "decoded": len(expected_rows),
+                                "partial": 0, "unknown": 0,
+                            })
+                        else:
+                            statuses = ["unknown"] if route == "MIL" else ["unknown", "unknown", "decoded"]
+                            self.assertEqual([record["status"] for record in records], statuses)
+                            self.assertEqual(ir["coverage"]["record"], {
+                                "total": len(statuses), "decoded": int(route == "LDDB"),
+                                "partial": 0, "unknown": 1 if route == "MIL" else 2,
+                            })
+                            self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED"
+                                                for item in ir["pous"][0]["findings"]))
+                        self.assertEqual(source.read_bytes(), before)
+
+    def test_sb_mil_near_matches_remain_unmined(self) -> None:
+        for fixture in (SB_CONTACT_MIL, SB_OUT_MIL):
+            for raw in (
+                fixture.replace("a=5:", "a=-1:"),
+                fixture.replace("Abl", "A16"),
+                fixture.replace("Abl", "Abl:unknown=1"),
+                fixture.replace("ct=a", "ct=p"),
+                fixture.replace("vt=nn", "vt=UNMINED"),
+                fixture.replace(":SB:", ":SW:"),
+                fixture.replace(":SB:", ":SB:SB:"),
+                fixture.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=c{s=#:v=2}}")
+                    .replace(":SB:", ":SB:Ks:"),
+                fixture.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=d{s=#:a=1:vt=nn}}")
+                    .replace(":SB:", ":SB:Zs:"),
+                fixture.replace("s=#:a=5", "s=0:a=5"),
+                fixture.replace("ct=a:as=[", "ct=a:unknown=1:as=["),
+            ):
+                with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                    _decode_mil(raw, 1)
+        for raw in (
+            SB_CONTACT_MIL.replace("lt=l", "lt=o"),
+            SB_CONTACT_MIL.replace("A:SB:", "B:SB:"),
+            SB_CONTACT_MIL.replace("A:SB:", "OUT:SB:"),
+            SB_OUT_MIL.replace("OUT:SB:", "RST:SB:"),
+            SB_OUT_MIL.replace("OUT:SB:", "A:SB:"),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_mil(raw, 1)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["SB"], ("scalar", (255,)))
+
+    def test_sb_lddb_near_matches_remain_unmined(self) -> None:
+        for fixture in (SB_CONTACT_LDDB, SB_OUT_LDDB):
+            for raw in (
+                fixture.replace("a=5:", "a=-1:"),
+                fixture.replace("Abl", "A16"),
+                fixture.replace("vt=Abl}", "vt=Abl:unknown=1}"),
+                fixture.replace("ct=a", "ct=p"),
+                fixture.replace("vt=nn", "vt=UNMINED"),
+                fixture.replace(":SB:", ":SW:"),
+                fixture.replace(":SB:", ":SB:SB:"),
+                fixture.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=c{s=#:v=2}}")
+                    .replace(":SB:", ":SB:Ks:"),
+                fixture.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=d{s=#:a=1:vt=nn}}")
+                    .replace(":SB:", ":SB:Zs:"),
+                fixture.replace("s=#:a=5", "s=0:a=5"),
+                fixture.replace("ct=a:as=[", "ct=a:unknown=1:as=["),
+                fixture.replace("e{s=ce{", "e{s=ce{unknown=1:"),
+                fixture.replace("}:pos=", "}:unknown=1:pos="),
+            ):
+                with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                    _decode_lddb(raw, 0, 2)
+        for raw in (
+            SB_CONTACT_LDDB.replace("a:SB:", "b:SB:"),
+            SB_CONTACT_LDDB.replace("a:SB:", "c:SB:"),
+            SB_CONTACT_LDDB.replace("a:SB:", "Zs:a:SB:"),
+            SB_OUT_LDDB.replace("c:SB:", "RST:SB:"),
+            SB_OUT_LDDB.replace("c:SB:", "OUT__16:SB:"),
+            SB_OUT_LDDB.replace("c:SB:", "a:SB:"),
+            SB_OUT_LDDB.replace("c:SB:", "Zs:c:SB:"),
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_lddb(raw, 0, 2)
+
+    def test_installed_cli_sb_routes_preserve_source_and_unknown_records(self) -> None:
+        for route, fixture, sb_index, opcode in (
+            ("MIL", SB_CONTACT_MIL, 0, "LD"),
+            ("MIL", SB_OUT_MIL, 0, "OUT"),
+            ("LDDB", SB_CONTACT_LDDB, 0, "LD"),
+            ("LDDB", SB_OUT_LDDB, 1, "OUT"),
+        ):
+            for expected in ("decoded", "unknown"):
+                raw = fixture.replace("a=5:", "a=256:")
+                if expected == "unknown":
+                    raw = raw.replace("Abl", "A16")
+                with self.subTest(route=route, opcode=opcode, expected=expected), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source = root / "synthetic-sb.gx3"
+                    if route == "MIL":
+                        synthetic_gx3(source, mil_mov=True, mil_source=raw)
+                    else:
+                        synthetic_gx3(source, lddb_source=raw)
+                    before = source.read_bytes()
+                    output = root / "output"
+                    result = subprocess.run(
+                        [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                         "--phase2-output", str(output)],
+                        cwd=root, capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                    records = ir["pous"][0]["records"]
+                    statuses = [expected] if route == "MIL" else [expected, expected, "decoded"]
+                    self.assertEqual([record["status"] for record in records], statuses)
+                    if expected == "decoded":
+                        self.assertEqual(records[sb_index]["opcode"], opcode)
+                        self.assertEqual(records[sb_index]["operands"][0]["raw_token"], "SB100")
+                        if route == "LDDB":
+                            self.assertEqual(records[1 - sb_index]["operands"][0]["raw_token"],
+                                             "M10" if sb_index == 0 else "M256")
+                            self.assertEqual(records[-1]["opcode"], "END")
+                    else:
+                        self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED"
+                                            for item in ir["pous"][0]["findings"]))
+                    self.assertEqual(source.read_bytes(), before)
 
     def test_counter_scalar_contact_output_reset(self) -> None:
         for address in (0, 5, 255):
