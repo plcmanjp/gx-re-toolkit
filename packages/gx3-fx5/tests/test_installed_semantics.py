@@ -201,6 +201,46 @@ class InstalledSemanticsTests(unittest.TestCase):
                                         for item in ir["pous"][0]["findings"]))
                 self.assertEqual(source.read_bytes(), before)
 
+    def test_lz_dmov_requires_exact_32bit_scalar_signature(self) -> None:
+        mil = MOV_MIL.replace("MOV:D:D", "MOV:LZ:D").replace("A16", "A32").replace("s=0", "s=#").replace("op=0", "op=#")
+        self.assertEqual(_decode_mil(mil, 1), [
+            {"kind": "instruction", "opcode": "DMOV", "operands": ["LZ5", "D10"], "text": None}
+        ])
+        for altered in (
+            mil.replace("A32", "A16"), mil.replace("ct=a", "ct=p"),
+            mil.replace("a=5", "a=-1"), mil.replace("LZ:", "UNMINED:"),
+            mil.replace("vt=nn", "vt=UNMINED"),
+            mil.replace("d{s=#:a=5:vt=nn}", "M{b=d{s=#:a=5:vt=nn}:m=c{s=#:v=2}}"),
+        ):
+            with self.subTest(mil=altered), self.assertRaises(MiningRequired):
+                _decode_mil(altered, 1)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["LZ"], ("scalar", (0,)))
+
+    def test_installed_cli_lz_dmov_both_directions_and_preservation(self) -> None:
+        for address in (0, 1):
+            for source_tag, target_tag in (("LZ", "D"), ("D", "LZ")):
+                mil = MOV_MIL.replace("MOV:D:D", f"MOV:{source_tag}:{target_tag}")
+                mil = mil.replace("A16", "A32").replace("s=0", "s=#").replace("op=0", "op=#")
+                mil = mil.replace("a=5:", f"a={address}:").replace("a=10:", f"a={address}:")
+                with self.subTest(address=address, direction=(source_tag, target_tag)), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory);source = root / "synthetic-lz.gx3"
+                    synthetic_gx3(source, mil_mov=True, mil_source=mil)
+                    before = source.read_bytes();output = root / "output"
+                    result = subprocess.run(
+                        [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                         "--phase2-output", str(output)], cwd=root, capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                    records = ir["pous"][0]["records"]
+                    self.assertEqual(records[0]["opcode"], "DMOV")
+                    self.assertEqual([record["operands"][0]["raw_token"] for record in records],
+                                     [f"{tag}{address}" for tag in (source_tag, target_tag)])
+                    self.assertEqual(records[1]["continues_record_id"], records[0]["record_id"])
+                    self.assertEqual(ir["coverage"]["record"], {"total": 2, "decoded": 2, "partial": 0, "unknown": 0})
+                    self.assertEqual(source.read_bytes(), before)
+
     def test_w_scalar_uses_hexadecimal_addresses(self) -> None:
         for address, token in ((0, "W0"), (0xFF, "WFF"), (0x100, "W100")):
             with self.subTest(address=address):
