@@ -98,6 +98,12 @@ E_EMOV_LDDB = (
     "args=[c{s=#:v=3F9D70A4}:d{s=#:a=22:vt=nn}]}:pos=1,0}]}}"
 )
 
+E_EMOV_MIL = (
+    "V1:1:1:1:MOV:E_2n:D:ms{el=["
+    "mc{op=cl{op=#:ct=a:as=[as{vt=Ar32}:as{vt=Ar32}]}:"
+    "as=[c{s=#:v=3F9D70A4}:d{s=#:a=22:vt=nn}]}]}"
+)
+
 S_OUT_LDDB = (
     "V1:4:1:1:1:4:a:M:c:SfcS:cb{fg=fg{dim=2x1:es=["
     "e{s=ce{op=ct{op=#:ct=a:as=[as{vt=Abl}]}:args=[d{s=#:a=901:vt=nn}]}:pos=0,0}"
@@ -157,6 +163,76 @@ def synthetic_gx3(path: Path, *, unknown: bool = False, missing_step: bool = Fal
 
 
 class InstalledSemanticsTests(unittest.TestCase):
+    def test_emov_mil_float32_exact_context_roundtrip(self) -> None:
+        for bits, token in (("3F9D70A4", "E1.23"), ("BF9D70A4", "E-1.23"),
+                            ("41200000", "E10"), ("3F000000", "E0.5"), ("00000000", "E0")):
+            with self.subTest(bits=bits):
+                self.assertEqual(_decode_mil(E_EMOV_MIL.replace("3F9D70A4", bits), 1), [
+                    {"kind": "instruction", "opcode": "EMOV", "operands": [token, "D22"], "text": None}
+                ])
+                self.assertEqual(struct.pack(">f", float(token[1:])).hex().upper(), bits)
+
+    def test_emov_mil_float32_near_matches_remain_unmined(self) -> None:
+        mutations = [E_EMOV_MIL.replace("3F9D70A4", bits) for bits in (
+            "7F800000", "FF800000", "7FC00000", "00000001", "80000000", "3F800001",
+            "3F9D70A", "03F9D70A4", "3f9d70a4", "3F9D70AG", "1.23",
+        )]
+        mutations.extend(E_EMOV_MIL.replace(a, b) for a, b in (
+            ("MOV:E_2n:D:", "MOV:D:E_2n:"), ("MOV:", "DEMOV:"), ("MOV:", "EMOV:"),
+            ("E_2n:", "E:"), ("E_2n:D:", "E_2n:E_2n:"), ("Ar32", "A32"),
+            ("Ar32", "Ar64"), ("ct=a", "ct=p"), ("op=#", "op=0"),
+            ("v=3F9D70A4}", "v=3F9D70A4:si=u}"), ("a=22:", "a=-1:"),
+            ("s=#:a=22", "s=0:a=22"), ("vt=Ar32}", "vt=Ar32:extra=1}"),
+            ("ct=a:as=", "ct=a:extra=1:as="),
+        ))
+        for raw in mutations:
+            with self.subTest(raw=raw), self.assertRaises(MiningRequired):
+                _decode_mil(raw, 1)
+        with self.assertRaises(MiningRequired):
+            _decode_mil(E_EMOV_MIL, 2)
+        with self.assertRaises(MiningRequired):
+            _format_operand(["E_2n"], ("scalar", (1,)))
+
+    def test_emov_mil_mixed_logic_complete_record_sequence(self) -> None:
+        raw = E_EMOV_MIL.replace("MOV:E_2n:D:", "A:M:MOV:E_2n:D:").replace(
+            "ms{el=[", "ms{el=[mc{op=lct{op=#:lt=l:ct=a:as=[as{vt=Abl}]}:as=[d{s=#:a=7:vt=nn}]}:")
+        self.assertEqual(_decode_mil(raw, 2), [
+            {"kind": "instruction", "opcode": "LD", "operands": ["M7"], "text": None},
+            {"kind": "instruction", "opcode": "EMOV", "operands": ["E1.23", "D22"], "text": None},
+        ])
+
+    def test_installed_cli_emov_mil_coverage_and_preservation(self) -> None:
+        for bits, token in (("3F9D70A4", "E1.23"), ("BF9D70A4", "E-1.23"),
+                            ("00000000", "E0"), ("7FC00000", None)):
+            with self.subTest(bits=bits), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "synthetic-emov-mil.gx3"
+                synthetic_gx3(source, mil_mov=True,
+                              mil_source=E_EMOV_MIL.replace("3F9D70A4", bits))
+                before = source.read_bytes()
+                output = root / "output"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-m", "gx3_fx5_parser_toolkit.cli", str(source),
+                     "--phase2-output", str(output)],
+                    cwd=root, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                ir = json.loads((output / "neutral-ir.json").read_text(encoding="utf-8"))
+                records = ir["pous"][0]["records"]
+                if token is not None:
+                    self.assertEqual([
+                        (record["kind"], record["opcode"], [operand["raw_token"] for operand in record["operands"]])
+                        for record in records
+                    ], [("instruction", "EMOV", [token]), ("continuation", None, ["D22"])])
+                    self.assertEqual([record["status"] for record in records], ["decoded"] * 2)
+                    self.assertEqual(records[1]["continues_record_id"], records[0]["record_id"])
+                    self.assertEqual(ir["coverage"]["record"], {"total": 2, "decoded": 2, "partial": 0, "unknown": 0})
+                else:
+                    self.assertEqual([record["status"] for record in records], ["unknown"])
+                    self.assertEqual(ir["coverage"]["record"], {"total": 1, "decoded": 0, "partial": 0, "unknown": 1})
+                    self.assertTrue(any(item["finding_code"] == "MINING_REQUIRED" for item in ir["pous"][0]["findings"]))
+                self.assertEqual(source.read_bytes(), before)
+
     def test_emov_lddb_float32_plain_decimal_roundtrip(self) -> None:
         for bits, token in (
             ("3F9D70A4", "E1.23"), ("BF9D70A4", "E-1.23"),

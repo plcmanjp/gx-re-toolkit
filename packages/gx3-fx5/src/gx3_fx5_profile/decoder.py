@@ -719,6 +719,26 @@ def _header_tokens(data: str) -> list[str]:
     return opcode_header_tokens(data)
 
 
+def _mil_float32_operands(record: str, signature: Any) -> list[str]:
+    """Decode the exact non-pulse MOV/Ar32 constant-to-D MIL form as EMOV."""
+    if (
+        signature.form != "coil" or signature.header_marker != "MOV"
+        or signature.logic_type != "" or signature.pulse
+        or signature.operand_vts != ("Ar32", "Ar32")
+        or signature.operand_kinds != ("c", "d")
+        or signature.header_operand_tags != ("E_2n", "D")
+    ):
+        raise MiningRequired("operand", "MIL float32 instruction context is unmined")
+    match = re.fullmatch(
+        r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Ar32\}:as\{vt=Ar32\}\]\}:"
+        r"as=\[(c\{s=#:v=[0-9A-F]{8}\}):d\{s=#:a=(\d+):vt=nn\}\]\}",
+        record,
+    )
+    if match is None:
+        raise MiningRequired("operand", "MIL float32 complete record shape is unmined")
+    return [_lddb_float32_spelling(match.group(1)), "D" + str(int(match.group(2)))]
+
+
 def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
     if data == "V1:1:1:1:ms{el=[ma{k=@BE/NOP:ps=[p{k=NUM:v=#}]}]}":
         if expected_count != 1:
@@ -795,6 +815,13 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 "opcode", "MIL instruction signature is absent from the approved oracle"
             ) from error
         operands: list[str] = []
+        if "E_2n" in oracle_signatures[record_index].header_operand_tags:
+            operands = _mil_float32_operands(record, oracle_signatures[record_index])
+            cursor += 2
+            result.append(
+                {"kind": "instruction", "opcode": opcode, "operands": operands, "text": None}
+            )
+            continue
         for operand_index, operand in enumerate(_mil_operands(record)):
             authorized = _format_source_authorized_operand(
                 tokens[cursor:], operand, oracle_signatures[record_index], operand_index,
