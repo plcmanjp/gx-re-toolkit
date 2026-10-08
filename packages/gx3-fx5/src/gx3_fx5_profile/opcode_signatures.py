@@ -33,6 +33,7 @@ _OPERAND_TAGS = frozenset(
         "DX",
         "DY",
         "E",
+        "E_2n",
         "ED",
         "F",
         "FD",
@@ -609,6 +610,12 @@ def _source_authorized_operand_width(
     marker: str, tags: Sequence[str], item: str
 ) -> int | None:
     """Return only descriptor widths proven by an exact source tuple."""
+    if (
+        marker == "MOV" and list(tags[:2]) == ["E_2n", "D"]
+        and re.fullmatch(r"c\{s=#:v=[0-9A-F]{8}\}", item) is not None
+    ):
+        # Width only; the decoder gates the complete Ar32 record and float class.
+        return 1
     if (
         marker in {"SP_SOCOPEN", "SP_SOCCLOSE", "SP_SOCRCV", "SP_SOCSND"}
         and list(tags[:3]) == ["String", "U0", '"U0"']
@@ -1677,6 +1684,38 @@ _APPROVED_ROWS: tuple[tuple[str, str], ...] = (
 # deliberately bypass the semantic table below so no tag, arity or pulse
 # generalization can turn one observed serialization into a wildcard.
 _SOURCE_AUTHORIZED_ROWS: tuple[tuple[OpcodeSignature, str], ...] = (
+    (
+        OpcodeSignature(
+            "coil", "MC", "", False,
+            ("A16s", "Abl"), ("d", "d"), ("N", "M"),
+            "op=cl{op=#:ct=a:as=[as{vt=A16s}:as{vt=Abl}]}",
+        ),
+        "MC",
+    ),
+    (
+        OpcodeSignature(
+            "coil", "MCR", "", False,
+            ("A16s",), ("d",), ("N",),
+            "op=cl{op=#:ct=a:as=[as{vt=A16s}]}",
+        ),
+        "MCR",
+    ),
+    (
+        OpcodeSignature(
+            "coil", "MOV", "", False,
+            ("Ar32", "Ar32"), ("c", "d"), ("E_2n", "D"),
+            "op=cl{op=#:ct=a:as=[as{vt=Ar32}:as{vt=Ar32}]}",
+        ),
+        "EMOV",
+    ),
+    (
+        OpcodeSignature(
+            "coil", "OUT", "", False,
+            ("Abl", "A32"), ("d", "c"), ("LC", "K_2"),
+            "op=cl{op=#:ct=a:as=[as{vt=Abl}:as{vt=A32}]}",
+        ),
+        "OUT",
+    ),
     (
         OpcodeSignature(
             "coil", "SET", "", False,

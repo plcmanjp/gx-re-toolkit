@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import struct
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -170,6 +171,7 @@ SCALAR_TAGS = frozenset(
         "SM",
         "ST",
         "T",
+        "W",
         "X",
         "Y",
         "Z",
@@ -212,6 +214,8 @@ INSTRUCTION_MARKERS = frozenset(
         "INC",
         "INV",
         "ME",
+        "MC",
+        "MCR",
         "MOV",
         "MPP",
         "MPS",
@@ -316,13 +320,15 @@ def _format_operand(
     if shape != "scalar" or not tags or tags[0] not in SCALAR_TAGS or len(numbers) != 1:
         raise MiningRequired("operand", "MIL scalar operand type is unmined")
     prefix = {"K_1": "K", "K_2": "K", "H_1": "H", "SfcS": "S"}.get(tags[0], tags[0])
+    if prefix == "W" and numbers[0] < 0:
+        raise MiningRequired("operand", "MIL W address is negative")
     if prefix in {"X", "Y"}:
         # Issue #30 official MIL anchors: 1057/1059/1060 -> X421/X423/X424.
         number = f"{numbers[0]:X}"
         if re.fullmatch(r"[0-7]+", number) is None:
             raise MiningRequired("operand", "MIL X/Y source spelling is invalid")
     else:
-        number = f"{numbers[0]:X}" if prefix in {"B", "H"} else str(numbers[0])
+        number = f"{numbers[0]:X}" if prefix in {"B", "H", "W"} else str(numbers[0])
     return f"{prefix}{number}", 1
 
 
@@ -340,6 +346,36 @@ def _format_source_authorized_operand(
     vts = signature.operand_vts
     kinds = signature.operand_kinds
     all_tags = signature.header_operand_tags
+    # Nesting is an MC/MCR operand, not a generally admitted scalar device.
+    # Only the complete observed signatures and raw operand shapes authorize it.
+    mc_form = (
+        signature.form == "coil" and marker == "MC" and logic_type == ""
+        and not signature.pulse and vts == ("A16s", "Abl")
+        and kinds == ("d", "d") and all_tags == ("N", "M")
+        and signature.inner_op == "op=cl{op=#:ct=a:as=[as{vt=A16s}:as{vt=Abl}]}"
+    )
+    mcr_form = (
+        signature.form == "coil" and marker == "MCR" and logic_type == ""
+        and not signature.pulse and vts == ("A16s",) and kinds == ("d",)
+        and all_tags == ("N",)
+        and signature.inner_op == "op=cl{op=#:ct=a:as=[as{vt=A16s}]}"
+    )
+    if operand_index == 0 and (mc_form or mcr_form):
+        nesting_raw = (
+            r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=A16s\}"
+            + (r":as\{vt=Abl\}" if mc_form else "")
+            + r"\]\}:as=\[d\{s=#:a=-?\d+:vt=nn\}"
+            + (r":d\{s=#:a=\d+:vt=nn\}" if mc_form else "")
+            + r"\]\}"
+        )
+        if (
+            shape != "scalar" or len(numbers) != 1 or tags[:1] != ["N"]
+            or re.fullmatch(nesting_raw, record) is None
+        ):
+            raise MiningRequired("operand", "MIL MC/MCR nesting serialization is unobserved")
+        if not 0 <= numbers[0] <= 14:
+            raise MiningRequired("operand", "MIL MC/MCR nesting index is outside N0-N14")
+        return f"N{numbers[0]}", 1
     # Official FX5 exports corroborate these MOV directions independently of
     # target support.  Match the full signature and composite shape, not a
     # project hash or a globally admitted SD/Y tag.
@@ -410,6 +446,114 @@ def _format_source_authorized_operand(
         return f"K{numbers[0]}", 2
     if shape == "scalar" and len(numbers) == 1:
         number = numbers[0]
+        if (
+            marker == "MOV" and logic_type == "" and not signature.pulse
+            and vts == ("A16", "A16") and kinds == ("d", "d")
+            and all_tags in {("D", "SW"), ("SW", "D")}
+            and operand_index == all_tags.index("SW") and tags[:1] == ["SW"]
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=A16\}:as\{vt=A16\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}:d\{s=#:a=\d+:vt=nn\}\]\}", record,
+            ) is not None
+        ):
+            return f"SW{number:X}", 1
+        if (
+            operand_index == 0 and tags[:1] == ["SB"]
+            and all_tags == ("SB",) and vts == ("Abl",) and kinds == ("d",)
+            and not signature.pulse
+            and (
+                (
+                    marker == "A" and logic_type == "l"
+                    and re.fullmatch(
+                        r"mc\{op=lct\{op=#:lt=l:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                        r"as=\[d\{s=#:a=\d+:vt=nn\}\]\}", record,
+                    ) is not None
+                )
+                or (
+                    marker == "OUT" and logic_type == ""
+                    and re.fullmatch(
+                        r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                        r"as=\[d\{s=#:a=\d+:vt=nn\}\]\}", record,
+                    ) is not None
+                )
+            )
+        ):
+            return f"SB{number:X}", 1
+        counter_tag = all_tags[0] if all_tags and all_tags[0] in {"C", "LC"} else None
+        counter_width, counter_constant = ("A16", "K_1") if counter_tag == "C" else ("A32", "K_2")
+        counter_contact = (
+            marker == "A" and logic_type == "l" and not signature.pulse
+            and counter_tag is not None
+            and vts == ("Abl",) and kinds == ("d",) and all_tags == (counter_tag,)
+            and re.fullmatch(
+                r"mc\{op=lct\{op=#:lt=l:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}\]\}", record,
+            ) is not None
+        )
+        counter_reset = (
+            marker == "RST" and logic_type == "" and not signature.pulse
+            and counter_tag is not None
+            and vts == ("Abl",) and kinds == ("d",) and all_tags == (counter_tag,)
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}\]\}", record,
+            ) is not None
+        )
+        counter_output = (
+            marker == "OUT" and logic_type == "" and not signature.pulse
+            and counter_tag is not None
+            and vts == ("Abl", counter_width) and kinds == ("d", "c")
+            and all_tags == (counter_tag, counter_constant)
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Abl\}:as\{vt=" + counter_width + r"\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}:c\{s=#:v=\d+:si=s\}\]\}", record,
+            ) is not None
+        )
+        counter_read = (
+            marker == "MOV" and logic_type == "" and not signature.pulse
+            and counter_tag is not None and all_tags == (counter_tag, "D")
+            and vts == (counter_width, counter_width) and kinds == ("d", "d")
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=" + counter_width + r"\}:as\{vt=" + counter_width + r"\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}:d\{s=#:a=\d+:vt=nn\}\]\}", record,
+            ) is not None
+        )
+        if operand_index == 0 and tags[:1] == [counter_tag] and (
+            counter_contact or counter_reset or counter_output or counter_read
+        ):
+            return f"{counter_tag}{number}", 1
+        if (
+            marker == "MOV"
+            and logic_type == ""
+            and not signature.pulse
+            and vts == ("A32", "A32")
+            and kinds == ("d", "d")
+            and all_tags in {("LZ", "D"), ("D", "LZ")}
+            and operand_index == all_tags.index("LZ")
+            and tags[:1] == ["LZ"]
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=A32\}:as\{vt=A32\}\]\}:"
+                r"as=\[d\{s=#:a=\d+:vt=nn\}:d\{s=#:a=\d+:vt=nn\}\]\}",
+                record,
+            )
+        ):
+            return f"LZ{number}", 1
+        if (
+            marker == "OUT"
+            and logic_type == ""
+            and not signature.pulse
+            and operand_index == 0
+            and vts == ("Abl",)
+            and kinds == ("d",)
+            and all_tags == ("F",)
+            and tags[:1] == ["F"]
+            and re.fullmatch(
+                r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Abl\}\]\}:"
+                rf"as=\[d\{{s=#:a={number}:vt=nn\}}\]\}}",
+                record,
+            )
+        ):
+            return f"F{number}", 1
         if (
             marker == "MOV"
             and operand_index == 0
@@ -607,6 +751,26 @@ def _header_tokens(data: str) -> list[str]:
     return opcode_header_tokens(data)
 
 
+def _mil_float32_operands(record: str, signature: Any) -> list[str]:
+    """Decode the exact non-pulse MOV/Ar32 constant-to-D MIL form as EMOV."""
+    if (
+        signature.form != "coil" or signature.header_marker != "MOV"
+        or signature.logic_type != "" or signature.pulse
+        or signature.operand_vts != ("Ar32", "Ar32")
+        or signature.operand_kinds != ("c", "d")
+        or signature.header_operand_tags != ("E_2n", "D")
+    ):
+        raise MiningRequired("operand", "MIL float32 instruction context is unmined")
+    match = re.fullmatch(
+        r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=Ar32\}:as\{vt=Ar32\}\]\}:"
+        r"as=\[(c\{s=#:v=[0-9A-F]{8}\}):d\{s=#:a=(\d+):vt=nn\}\]\}",
+        record,
+    )
+    if match is None:
+        raise MiningRequired("operand", "MIL float32 complete record shape is unmined")
+    return [_lddb_float32_spelling(match.group(1)), "D" + str(int(match.group(2)))]
+
+
 def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
     if data == "V1:1:1:1:ms{el=[ma{k=@BE/NOP:ps=[p{k=NUM:v=#}]}]}":
         if expected_count != 1:
@@ -683,6 +847,13 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 "opcode", "MIL instruction signature is absent from the approved oracle"
             ) from error
         operands: list[str] = []
+        if "E_2n" in oracle_signatures[record_index].header_operand_tags:
+            operands = _mil_float32_operands(record, oracle_signatures[record_index])
+            cursor += 2
+            result.append(
+                {"kind": "instruction", "opcode": opcode, "operands": operands, "text": None}
+            )
+            continue
         for operand_index, operand in enumerate(_mil_operands(record)):
             authorized = _format_source_authorized_operand(
                 tokens[cursor:], operand, oracle_signatures[record_index], operand_index,
@@ -801,7 +972,9 @@ def _operand(
     prefix = token.split("\\", 1)[0]
     kind = (
         "constant"
-        if prefix.startswith(("K", "H")) and not re.match(r"K\d+[A-Z]", prefix)
+        if (
+            prefix.startswith(("K", "H")) and not re.match(r"K\d+[A-Z]", prefix)
+        ) or re.fullmatch(r"E(?:0|-?(?:[1-9][0-9]*|(?:0|[1-9][0-9]*)\.[0-9]*[1-9]))", token) is not None
         else "device"
     )
     return {
@@ -1023,16 +1196,42 @@ def _lddb_xy_spelling(tag: str, number: int) -> str:
     return f"{tag}{digits}"
 
 
+def _lddb_float32_spelling(raw: str) -> str:
+    """Recover normal or positive-zero E constants with seven-digit roundtrips."""
+    match = re.fullmatch(r"c\{s=#:v=([0-9A-F]{8})\}", raw)
+    if match is None:
+        raise MiningRequired("operand", "LDDB float32 constant shape is unmined")
+    bits = bytes.fromhex(match.group(1))
+    encoded = int.from_bytes(bits, "big")
+    exponent = (encoded >> 23) & 0xFF
+    if encoded != 0 and exponent in {0, 0xFF}:
+        raise MiningRequired("operand", "LDDB float32 constant class is unmined")
+    value = struct.unpack(">f", bits)[0]
+    for precision in range(1, 8):
+        spelling = format(value, f".{precision}g")
+        if re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?", spelling) is None:
+            continue
+        try:
+            roundtrip = struct.pack(">f", float(spelling))
+        except OverflowError:
+            continue
+        if roundtrip == bits:
+            return "E" + spelling
+    raise MiningRequired("operand", "LDDB float32 decimal spelling is unmined")
+
+
 def _lddb_scalar_operand(tag: str, raw: str) -> str:
     # These device/constant tags have exact LDDB shapes and radices that are
     # not interchangeable with the generic scalar grammar below.  Keep the
     # full serialization in the approval key so near-matches fail closed.
-    if tag in {"F", "DX"}:
+    if tag == "E_2n":
+        return _lddb_float32_spelling(raw)
+    if tag in {"F", "DX", "C", "LC", "SB", "SW"}:
         device = re.fullmatch(r"d\{s=#:a=(\d+):vt=nn\}", raw)
         if device is None:
             raise MiningRequired("operand", "LDDB scalar operand is unmined")
         number = int(device.group(1))
-        return f"F{number}" if tag == "F" else f"DX{number:X}"
+        return f"{tag}{number:X}" if tag in {"DX", "SB", "SW"} else f"{tag}{number}"
     if tag == "H_2":
         unsigned_hex = re.fullmatch(r"c\{s=#:v=(\d+):si=u\}", raw)
         if unsigned_hex is None:
@@ -1063,7 +1262,8 @@ def _lddb_scalar_operand(tag: str, raw: str) -> str:
     if tag in {"X", "Y"}:
         return _lddb_xy_spelling(tag, number)
     if tag in _LDDB_SCALAR_TAGS:
-        return f"{tag}{number}"
+        prefix = "S" if tag == "SfcS" else tag
+        return f"{prefix}{number}"
     raise MiningRequired("operand", "LDDB operand tag is unmined")
 
 
@@ -1203,6 +1403,7 @@ class _LddbGridElement:
     args: list[str]
     has_note: bool
     note_subtype: str = ""
+    raw: str = ""
 
 
 @dataclass(frozen=True)
@@ -1266,6 +1467,7 @@ def _lddb_elements(data: str) -> tuple[list[_LddbGridElement], list[tuple[int, i
                 arguments,
                 has_note,
                 note_subtype,
+                record,
             )
         )
     vertical = [(int(x), int(y)) for x, y in re.findall(r"v\{pos=(\d+),(\d+)\}", data)]
@@ -1304,6 +1506,10 @@ def _lddb_comparison_width(signature: tuple[str, ...]) -> str:
 
 
 def _lddb_command(marker: str, pulse: str, signature: tuple[str, ...]) -> str:
+    if marker == "OUT__32":
+        if pulse != "a" or signature != ("Abl", "A32"):
+            raise MiningRequired("opcode", "LDDB OUT__32 signature is unmined")
+        return "OUT"
     if marker in _LDDB_MINED_MARKERS:
         instruction = _LDDB_MINED_COMMANDS.get((marker, pulse, signature))
         if instruction is None:
@@ -1339,9 +1545,47 @@ def _lddb_validate_mined_scalar_context(
     raw: str,
     following_tag: str,
     descriptors: tuple[str, ...],
+    marker: str,
 ) -> None:
     """Bind newly mined scalar tags to their observed instruction positions."""
-    if tag == "F":
+    if tag == "E_2n":
+        approved = (
+            instruction == "EMOV" and marker == "EMOV" and signature == ("Ar32", "Ar32")
+            and operand_index == 0 and descriptors == ("E_2n", "D")
+            and re.fullmatch(r"c\{s=#:v=[0-9A-F]{8}\}", raw) is not None
+        )
+    elif tag == "SW":
+        approved = (
+            instruction == "MOV" and marker == "MOV" and signature == ("A16", "A16")
+            and descriptors in {("D", "SW"), ("SW", "D")}
+            and operand_index == descriptors.index("SW")
+            and re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is not None
+        )
+    elif tag == "SB":
+        approved = (
+            operand_index == 0 and signature == ("Abl",) and descriptors == ("SB",)
+            and re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is not None
+            and ((instruction == "LD" and marker == "a") or (instruction == "OUT" and marker == "c"))
+        )
+    elif tag in {"C", "LC"}:
+        width, constant, out_marker = ("A16", "K_1", "OUT__16") if tag == "C" else ("A32", "K_2", "OUT__32")
+        read_marker = "MOV" if tag == "C" else "DMOV"
+        scalar = re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is not None
+        approved = scalar and operand_index == 0 and (
+            (instruction == "LD" and marker == "a" and signature == ("Abl",) and descriptors == (tag,))
+            or (instruction == "RST" and marker == "RST" and signature == ("Abl",) and descriptors == (tag,))
+            or (instruction == "OUT" and marker == out_marker and signature == ("Abl", width) and descriptors == (tag, constant))
+            or (instruction == read_marker and marker == read_marker and signature == (width, width) and descriptors == (tag, "D"))
+        )
+    elif tag in {"K_1", "K_2"} and descriptors[:1] in {("C",), ("LC",)}:
+        counter = descriptors[0]
+        width, constant, out_marker = ("A16", "K_1", "OUT__16") if counter == "C" else ("A32", "K_2", "OUT__32")
+        approved = (
+            instruction == "OUT" and marker == out_marker and signature == ("Abl", width)
+            and operand_index == 1 and tag == constant and descriptors == (counter, constant)
+            and re.fullmatch(r"c\{s=#:v=\d+:si=s\}", raw) is not None
+        )
+    elif tag == "F":
         scalar = re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is not None
         grouped = (
             following_tag == "Ks"
@@ -1468,6 +1712,7 @@ def _lddb_instruction_from_element(
         raise MiningRequired("opcode", "LDDB descriptor stream is shorter than its grid")
     marker = descriptors[cursor]
     cursor += 1
+    indexed_operation_marker = marker == "Zs"
     if marker == "Zs":
         if cursor >= len(descriptors):
             raise MiningRequired("opcode", "LDDB indexed operation marker is incomplete")
@@ -1496,7 +1741,12 @@ def _lddb_instruction_from_element(
             raise MiningRequired("operand", "LDDB RST__16 serialization is unmined")
     counts = _LDDB_OPERAND_COUNTS.get(instruction)
     exact_arity = (marker, element.pulse, element.signature, len(element.args))
-    if (counts is None or len(element.args) not in counts) and exact_arity not in _LDDB_EXACT_ARITIES:
+    exact_emov = (
+        instruction == "EMOV" and marker == "EMOV" and element.kind == "cl"
+        and element.pulse == "a" and element.signature == ("Ar32", "Ar32")
+        and len(element.args) == 2 and descriptors[cursor:cursor + 2] == ["E_2n", "D"]
+    )
+    if (counts is None or len(element.args) not in counts) and exact_arity not in _LDDB_EXACT_ARITIES and not exact_emov:
         raise MiningRequired("operand", "LDDB command argument count is unmined")
     operand_descriptor_start = cursor
     operands: list[str] = []
@@ -1514,6 +1764,60 @@ def _lddb_instruction_from_element(
         )
         operands.append(operand)
     descriptor_context = tuple(descriptors[operand_descriptor_start:cursor])
+    if any(tag == "E_2n" for tag, _index, _raw, _following in validation):
+        if indexed_operation_marker:
+            raise MiningRequired("opcode", "LDDB indexed EMOV constant is unmined")
+        exact_emov_element = (
+            "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=Ar32}:as{vt=Ar32}]}:args=["
+            + ":".join(element.args)
+            + "]}:pos=" + str(element.x) + "," + str(element.y) + "}"
+        )
+        if (
+            element.raw != exact_emov_element or len(element.args) != 2
+            or re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", element.args[1]) is None
+        ):
+            raise MiningRequired("record", "LDDB EMOV constant element shape is unmined")
+    if any(tag == "SW" for tag, _index, _raw, _following in validation):
+        if indexed_operation_marker:
+            raise MiningRequired("opcode", "LDDB indexed SW operation is unmined")
+        exact_sw_element = (
+            "e{s=ce{op=cl{op=#:ct=a:as=[as{vt=A16}:as{vt=A16}]}:args=["
+            + ":".join(element.args)
+            + "]}:pos=" + str(element.x) + "," + str(element.y) + "}"
+        )
+        if (
+            element.raw != exact_sw_element or len(element.args) != 2
+            or any(re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is None for raw in element.args)
+        ):
+            raise MiningRequired("record", "LDDB SW element shape is unmined")
+    if any(tag == "SB" for tag, _index, _raw, _following in validation):
+        if indexed_operation_marker:
+            raise MiningRequired("opcode", "LDDB indexed SB operation is unmined")
+        exact_sb_element = (
+            "e{s=ce{op=" + element.kind + "{op=#:ct=a:as=[as{vt=Abl}]}:args=["
+            + ":".join(element.args)
+            + "]}:pos=" + str(element.x) + "," + str(element.y) + "}"
+        )
+        if element.raw != exact_sb_element:
+            raise MiningRequired("record", "LDDB SB element shape is unmined")
+    if any(tag in {"C", "LC"} for tag in descriptor_context):
+        if indexed_operation_marker:
+            raise MiningRequired("opcode", "LDDB indexed counter operation is unmined")
+        exact_counter_element = (
+            "e{s=ce{op=" + element.kind + "{op=#:ct=a:as=["
+            + ":".join("as{vt=" + value + "}" for value in element.signature)
+            + "]}:args=[" + ":".join(element.args)
+            + "]}:pos=" + str(element.x) + "," + str(element.y) + "}"
+        )
+        if element.raw != exact_counter_element:
+            raise MiningRequired("record", "LDDB counter element shape is unmined")
+        if instruction in {"MOV", "DMOV"} and any(tag in {"C", "LC"} for tag, _index, _raw, _following in validation):
+            if len(element.args) != 2 or any(
+                re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", raw) is None for raw in element.args
+            ):
+                raise MiningRequired("operand", "LDDB counter read scalar pair is unmined")
+    if marker == "OUT__32" and descriptor_context != ("LC", "K_2"):
+        raise MiningRequired("operand", "LDDB OUT__32 counter descriptors are unmined")
     if instruction == "SFL" and (
         descriptor_context != ("D", "K_1")
         or re.fullmatch(r"d\{s=#:a=\d+:vt=nn\}", element.args[0]) is None
@@ -1531,6 +1835,7 @@ def _lddb_instruction_from_element(
             raw,
             following_tag,
             descriptor_context,
+            marker,
         )
     return instruction, tuple(operands), cursor
 
