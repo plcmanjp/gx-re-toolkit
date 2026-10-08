@@ -214,6 +214,8 @@ INSTRUCTION_MARKERS = frozenset(
         "INC",
         "INV",
         "ME",
+        "MC",
+        "MCR",
         "MOV",
         "MPP",
         "MPS",
@@ -344,6 +346,36 @@ def _format_source_authorized_operand(
     vts = signature.operand_vts
     kinds = signature.operand_kinds
     all_tags = signature.header_operand_tags
+    # Nesting is an MC/MCR operand, not a generally admitted scalar device.
+    # Only the complete observed signatures and raw operand shapes authorize it.
+    mc_form = (
+        signature.form == "coil" and marker == "MC" and logic_type == ""
+        and not signature.pulse and vts == ("A16s", "Abl")
+        and kinds == ("d", "d") and all_tags == ("N", "M")
+        and signature.inner_op == "op=cl{op=#:ct=a:as=[as{vt=A16s}:as{vt=Abl}]}"
+    )
+    mcr_form = (
+        signature.form == "coil" and marker == "MCR" and logic_type == ""
+        and not signature.pulse and vts == ("A16s",) and kinds == ("d",)
+        and all_tags == ("N",)
+        and signature.inner_op == "op=cl{op=#:ct=a:as=[as{vt=A16s}]}"
+    )
+    if operand_index == 0 and (mc_form or mcr_form):
+        nesting_raw = (
+            r"mc\{op=cl\{op=#:ct=a:as=\[as\{vt=A16s\}"
+            + (r":as\{vt=Abl\}" if mc_form else "")
+            + r"\]\}:as=\[d\{s=#:a=-?\d+:vt=nn\}"
+            + (r":d\{s=#:a=\d+:vt=nn\}" if mc_form else "")
+            + r"\]\}"
+        )
+        if (
+            shape != "scalar" or len(numbers) != 1 or tags[:1] != ["N"]
+            or re.fullmatch(nesting_raw, record) is None
+        ):
+            raise MiningRequired("operand", "MIL MC/MCR nesting serialization is unobserved")
+        if not 0 <= numbers[0] <= 14:
+            raise MiningRequired("operand", "MIL MC/MCR nesting index is outside N0-N14")
+        return f"N{numbers[0]}", 1
     # Official FX5 exports corroborate these MOV directions independently of
     # target support.  Match the full signature and composite shape, not a
     # project hash or a globally admitted SD/Y tag.
