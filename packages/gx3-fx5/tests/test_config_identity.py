@@ -71,6 +71,34 @@ class ConfigIdentityTests(unittest.TestCase):
             self.assertEqual(ir["profile"]["detector_status"], "AMBIGUOUS")
             self.assertEqual(ir["findings"][0]["reason"], "dual Config evidence differs")
 
+    def test_dual_file_title_only_difference_is_nuisance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.archive(
+                directory,
+                '<Config Unit="FX5U" UnitId="528" Title="operator label"/>',
+                '<Config Unit="FX5U" UnitId="528" Title=""/>',
+            )
+            with SafeGx3Archive(source) as archive:
+                self.assertEqual(detect(archive).decision.value, "SUPPORTED")
+                project = discover_project(archive)
+                self.assertEqual(project["cpu"], "FX5U")
+                self.assertNotEqual(project["title_digest"], "")
+            ir = build_neutral_ir(source)
+            self.assertEqual(ir["profile"]["detector_status"], "SUPPORTED")
+
+    def test_dual_file_non_title_difference_remains_ambiguous(self):
+        cases = (
+            ('<Config Unit="FX5U" UnitId="528" Extra="one"/>',
+             '<Config Unit="FX5U" UnitId="528" Extra="two"/>'),
+            ('<Config Unit="FX5U" UnitId="528"><Child/></Config>',
+             '<Config Unit="FX5U" UnitId="528"/>'),
+        )
+        for primary, mirror in cases:
+            with self.subTest(primary=primary), tempfile.TemporaryDirectory() as directory:
+                source = self.archive(directory, primary, mirror)
+                with SafeGx3Archive(source) as archive:
+                    self.assertEqual(detect(archive).decision.value, "AMBIGUOUS")
+
     def test_single_unsupported_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             with SafeGx3Archive(self.archive(directory, '<Root><Config Unit="R04" UnitId="4097"/></Root>')) as archive:
