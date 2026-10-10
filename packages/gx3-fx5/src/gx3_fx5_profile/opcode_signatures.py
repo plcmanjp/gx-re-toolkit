@@ -480,7 +480,7 @@ def _strip_numbers(text: str) -> str:
 
 
 def _inner_op(record: str) -> str:
-    match = re.search(r"op=(lct|sct|cl)\{", record)
+    match = re.search(r"op=(lct|sct|cl|m)\{", record)
     if match is None:
         return ""
     blob, _end = _balanced_from(record, match.start())
@@ -709,6 +709,8 @@ def signature_from_mil_record(
         form = "contact"
     elif "op=cl{" in record:
         form = "coil"
+    elif "op=m{" in record:
+        form = "pointer"
     else:
         raise ValueError("MIL instruction form is unmined")
     logic = re.search(r"lt=([lao])", record)
@@ -1684,6 +1686,25 @@ _APPROVED_ROWS: tuple[tuple[str, str], ...] = (
 # deliberately bypass the semantic table below so no tag, arity or pulse
 # generalization can turn one observed serialization into a wildcard.
 _SOURCE_AUTHORIZED_ROWS: tuple[tuple[OpcodeSignature, str], ...] = (
+    (
+        OpcodeSignature(
+            "coil", "CALL", "", False, ("p",), ("d",), ("P",),
+            "op=cl{op=#:ct=a:as=[as{vt=p}]}",
+        ),
+        "CALL",
+    ),
+    (
+        OpcodeSignature(
+            "pointer", "Pointer", "", False, ("p",), ("d",), ("P",),
+            "op=m{op=#:as=[as{vt=p}]}",
+        ),
+        "Pointer",
+    ),
+    *(
+        (OpcodeSignature("coil", marker, "", False, (), (), (),
+                         "op=cl{op=#:ct=a}"), marker)
+        for marker in ("FEND", "RET")
+    ),
     (
         OpcodeSignature(
             "coil", "MC", "", False,
