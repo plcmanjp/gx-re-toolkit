@@ -68,6 +68,11 @@ distribution SHA-256 hashes.
 
 ## Usage
 
+The FX5 read-only decoder's exact MIL `CALL`, pointer declaration, `FEND` and
+`RET` syntax and unsupported variants are described in
+[pointer-control syntax](docs/fx5-mil-pointer-control.md). Syntax coverage is not
+GX, simulator, consumer or field acceptance.
+
 The GXW Python reader accepts `text_encoding="cp949"` or `"cp1252"` for
 source Statement and Note frames. The default is strict CP1252. The optional
 `"auto"` policy prefers reversible CP949 and then reversible CP1252; it is a

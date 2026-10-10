@@ -771,6 +771,34 @@ def _mil_float32_operands(record: str, signature: Any) -> list[str]:
     return [_lddb_float32_spelling(match.group(1)), "D" + str(int(match.group(2)))]
 
 
+def _mil_pointer_control(opcode: str, record: str) -> dict[str, Any] | None:
+    """Consume the complete observed P declaration/CALL and FEND/RET grammar.
+
+    P is not a generic scalar device. Rendering a stored nonnegative ordinal
+    neither validates a CPU pointer range nor an executable control-flow graph.
+    """
+    if opcode in {"FEND", "RET"}:
+        if record != "mc{op=cl{op=#:ct=a}}":
+            raise MiningRequired("record", "MIL control terminator shape is unmined")
+        return {"kind": "instruction", "opcode": opcode, "operands": [], "text": None}
+    if opcode not in {"CALL", "Pointer"}:
+        return None
+    operation = (
+        r"cl\{op=#:ct=a:as=\[as\{vt=p\}\]\}"
+        if opcode == "CALL" else r"m\{op=#:as=\[as\{vt=p\}\]\}"
+    )
+    match = re.fullmatch(
+        r"mc\{op=" + operation + r":as=\[d\{s=#:a=(\d+):vt=nn\}\]\}", record
+    )
+    if match is None:
+        raise MiningRequired("record", "MIL pointer control shape is unmined")
+    pointer = f"P{int(match.group(1))}"
+    return {
+        "kind": "instruction", "opcode": "CALL" if opcode == "CALL" else pointer,
+        "operands": [pointer] if opcode == "CALL" else [], "text": None,
+    }
+
+
 def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
     if data == "V1:1:1:1:ms{el=[ma{k=@BE/NOP:ps=[p{k=NUM:v=#}]}]}":
         if expected_count != 1:
@@ -814,13 +842,15 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
     ]
     if len(oracle_signatures) != len(serialized):
         raise MiningRequired("opcode", "opcode oracle and MIL record counts differ")
+    stream_cursor = 0
     def append_inline_notes() -> None:
-        nonlocal cursor
+        nonlocal cursor, stream_cursor
         while (
-            cursor + 1 < len(tokens)
-            and tokens[cursor + 1] in {"i", "s"}
-            and tokens[cursor] not in INSTRUCTION_MARKERS
+            stream_cursor < len(oracle_stream)
+            and oracle_stream[stream_cursor][0] == "note"
         ):
+            if cursor + 1 >= len(tokens) or tokens[cursor + 1] not in {"i", "s"}:
+                raise MiningRequired("record", "MIL inline note descriptors are unmined")
             result.append(
                 {
                     "kind": "note",
@@ -831,6 +861,7 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 }
             )
             cursor += 2
+            stream_cursor += 1
 
     for record_index, record in enumerate(serialized):
         append_inline_notes()
@@ -839,7 +870,14 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 "opcode", "MIL header has fewer descriptors than records"
             )
         marker = tokens[cursor]
+        if (
+            stream_cursor >= len(oracle_stream)
+            or oracle_stream[stream_cursor] != ("instruction", oracle_signatures[record_index])
+            or marker != oracle_signatures[record_index].header_marker
+        ):
+            raise MiningRequired("opcode", "MIL descriptor and record order differ")
         cursor += 1
+        stream_cursor += 1
         try:
             opcode = lookup_mnemonic(oracle_signatures[record_index])
         except UnknownOpcodeSignature as error:
@@ -847,6 +885,12 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 "opcode", "MIL instruction signature is absent from the approved oracle"
             ) from error
         operands: list[str] = []
+        control = _mil_pointer_control(opcode, record)
+        if control is not None:
+            # The exact signature has already consumed its operand descriptors.
+            cursor += len(oracle_signatures[record_index].header_operand_tags)
+            result.append(control)
+            continue
         if "E_2n" in oracle_signatures[record_index].header_operand_tags:
             operands = _mil_float32_operands(record, oracle_signatures[record_index])
             cursor += 2
@@ -875,7 +919,7 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
             }
         )
     append_inline_notes()
-    if cursor != len(tokens):
+    if cursor != len(tokens) or stream_cursor != len(oracle_stream):
         raise MiningRequired("opcode", "MIL header has unused descriptors")
     return result
 
