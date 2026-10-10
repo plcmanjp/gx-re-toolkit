@@ -64,6 +64,10 @@ NOTICE와 의존성 고지가 각 배포물에 들어갑니다. FX5/R의 source 
 
 ## 실행
 
+FX5 읽기 전용 디코더의 정확한 MIL CALL, 포인터 선언, FEND, RET 형식과
+미지원 변형은 [포인터 제어 문법](docs/fx5-mil-pointer-control.md)을 따른다.
+문법 해석은 GX, Simulator, 소비자 또는 현장 수용이 아니다.
+
 GXW Python 판독기는 Statement와 Note에 `text_encoding="cp949"` 또는
 `"cp1252"`를 지정할 수 있습니다. 기본값은 엄격한 CP1252입니다. 선택적인
 `"auto"` 정책은 바이트가 왕복 보존되는 CP949를 먼저, 다음으로 CP1252를
