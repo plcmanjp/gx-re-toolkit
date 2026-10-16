@@ -113,14 +113,14 @@ class ReaderReliabilityTests(unittest.TestCase):
         ], input_sha256="a" * 64)
         self.assertEqual("PARTIAL", direct["analysis"]["state"])
 
-    def test_known_operandless_and_dynamic_keep_complete(self):
+    def test_known_operandless_complete_but_dynamic_range_partial(self):
         result = project_rows(LD + bytes.fromhex("02 02") + END)
         self.assertEqual("COMPLETE", result["analysis"]["state"])
         dynamic = reference.project_rows([
             {"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
              "rows": [("MOV", "D0Z1 D10", ""), ("END", "", "")]}
         ], input_sha256="a" * 64)
-        self.assertEqual("COMPLETE", dynamic["analysis"]["state"])
+        self.assertEqual("PARTIAL", dynamic["analysis"]["state"])
         self.assertEqual("DYNAMIC", dynamic["occurrences"][0]["operands"][0]["coverage"]["state"])
 
     def test_edge_headers_and_each_operand_cut_at_eof_and_recovery(self):

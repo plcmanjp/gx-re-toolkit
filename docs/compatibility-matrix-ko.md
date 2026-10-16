@@ -19,9 +19,34 @@ Unit/UnitId 조합이 명시되면 `UNSUPPORTED`, 기종 식별 근거가 없거
 현재 호환성 보장이 아닙니다. [프로젝트 방향](../README-ko.md#프로젝트-방향)을
 참고하세요.
 
+R 객체 읽기는 관측된 디바이스 코멘트의 식별자/문자열과 local label의 이름/Comment를
+기존 IR로 출력합니다. carrier 소유 관계, 라벨 자료형/주소와 POU 연결은 미해독이므로
+PARTIAL을 유지합니다. 미지원 행은 opaque 식별자와 finding으로 보존합니다.
+자세한 범위는 [R 객체 읽기 경계](r-object-reading.md)를 따릅니다.
+
 FX5 detector의 정확한 tuple은 `(FX5U, 528)`, `(FX5UJ, 529)`, `(FX5S, 530)`입니다.
 FX5UC는 별도 identity를 추측하지 않고 검증된 FX5U tuple을 공유하는 범위로 제한합니다.
 tuple 일치만으로 전체 프로젝트의 완전 해독이나 target 변환을 승인하지 않습니다.
+
+별도 `gx3_fx5_profile.hsc_observed.decode_hsc_observed_settings` API는 문맥을
+검증한 Normal/전체 채널 Not Use 관측형만 반환합니다. 호출자는 UNIT 항목과
+순서가 있는 record 가드의 버전별 profile을 제공하고 그 출처를 독립 검증해야
+합니다. profile은 의미 이름이나 mapping을 지정할 수 없습니다. 고정 코드는
+record envelope, attribute, nested key를 검사한 뒤 `NORMAL`과
+`ALL_NOT_USE_OBSERVED_VECTOR`를 반환합니다. 다른 값, 손상 바이트와 문맥
+불일치는 위치를 포함한 미지원으로 남깁니다. counter-device encoding은 UNKNOWN이며
+프로젝트 완료나 공식 authority를 선언하지 않습니다. Neutral IR과 프로젝트
+reading-scope 판정은 변경하지 않고 일반 HSC schema 지원도 제공하지 않습니다.
+
+별도 `gx3_fx5_profile.cpu_observed.decode_cpu_observed_settings` API는 opaque
+문맥 가드 안에서 관측된 두 CPU 프로그램 이름 형식과 w3pa mirror를 읽습니다.
+제공된 모든 QPG carrier를 목록화하고 유일한 정규 POU link 및 관련 항목을
+검사하며 제한된 POU 이름을 반환합니다. `OBSERVED_SINGLETON_CONTEXT`는 독립
+관측으로 확인한 프로그램/POU 문맥이며 CPU의 숫자 foreign key 해독이 아닙니다.
+unlinked QPG는 위치와 UNKNOWN 사유를 보존합니다. 호출자는 전체 member 목록을
+제공하고 가드 profile과 공식 증거의 출처를 독립 검증해야 합니다. 일반 실행유형
+enum, 실행순서 규칙과 QPG record 크기 의미는 UNKNOWN입니다. Neutral IR을
+변경하거나 프로젝트 판독 완료를 선언하지 않습니다.
 
 CPU identity는 XML 루트 또는 wrapper의 직계 자식 위치에 Config 노드가 정확히
 하나 있어야 합니다. 다중 노드, 동일 중복과 중첩 후보는 탐색 순서와 무관하게

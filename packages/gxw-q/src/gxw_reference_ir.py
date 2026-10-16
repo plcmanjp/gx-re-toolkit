@@ -48,6 +48,24 @@ _CONTROL_READ_FORMS = frozenset({("N", "MC", 0, 2), ("N", "MCR", 0, 1),
 # MELSEC-Q/L Programming Manual (Common Instruction), SH-080809ENG, 5.1:
 # each (S) of these contact instructions is a source bit device.
 _CONTACT_READ = frozenset({"LDFI", "ANDF", "ORPI", "ORFI"})
+# SH-080809ENG-X observed spellings only: (access, span). A span is a
+# word count, runtime string, count operand, bit result, or reserved workspace.
+# No suffix/P variants, implicit SM flags, CPU capability or runtime claims.
+_MINED_FORMS = {
+    "SUM": {2: (("read", 1), ("write", 1))},
+    "SEG": {2: (("read", 1), ("write", 1))},
+    "SER": {4: (("read", 1), ("read", "count:3"), ("write", 2), ("read", 1))},
+    "UNI": {3: (("read", "uni:2"), ("write", 1), ("read", 1))},
+    "WSUM": {3: (("read", "count:2"), ("write", 2), ("read", 1))},
+    "DBCD": {2: (("read", 2), ("write", 2))},
+    "DXOR": {2: (("read", 2), ("both", 2)), 3: (("read", 2), ("read", 2), ("write", 2))},
+    "DZCP": {4: (("read", 2), ("read", 2), ("read", 2), ("write", "bits:3"))},
+    "$+": {2: (("read", "string"), ("both", "string")),
+           3: (("read", "string"), ("read", "string"), ("write", "string"))},
+    "LEN": {2: (("read", "string"), ("write", 1))},
+    "SORT": {5: (("both", "count:1"), ("read", 1), ("read", 1),
+                 ("write", "bits:1"), ("unknown", "reserved:2"))},
+}
 
 
 class ReferenceIrError(ValueError):
@@ -159,6 +177,14 @@ def parse_operand(raw_token: str, position: int) -> dict[str, Any]:
 
 
 def _role(opcode: str, position: int, operand_count: int) -> tuple[str, str]:
+    if opcode in _MINED_FORMS:
+        form = _MINED_FORMS[opcode].get(operand_count)
+        if form is None:
+            return "unknown", "MINED_FORM_ARITY_UNVERIFIED"
+        return form[position][0], ("RESERVED_WORKSPACE_ACCESS_UNVERIFIED" if opcode == "SORT" and position == 4
+                                   else "MANUAL_OPERAND_ROLE")
+    if opcode in _SOCKET_DUMMY_ARITY:
+        return "unknown", "SOCKET_CONTEXT_UNVERIFIED"
     if opcode in _CONTACT_READ:
         return (("read", "CONTACT_SOURCE_DEVICE") if position == 0 and operand_count == 1 else
                 ("unknown", "CONTACT_FORM_UNVERIFIED"))
@@ -176,8 +202,39 @@ def _role(opcode: str, position: int, operand_count: int) -> tuple[str, str]:
     return "write", "DESTINATION_OPERAND_POSITION"
 
 
-def _observed_role(operand: dict[str, Any], opcode: str, operand_count: int) -> tuple[str, str]:
-    role, basis = _role(opcode, operand["position"], operand_count)
+_SOCKET_DUMMY_ARITY = {"SP.SOCOPEN": 4, "SP.SOCCLOSE": 4, "SP.SOCRCV": 5, "SP.SOCSND": 5}
+
+
+def _instruction_operands(opcode: str, tokens: list[str], profile_id: str) -> list[dict[str, Any]]:
+    operands = [parse_operand(token, position) for position, token in enumerate(tokens)]
+    # SH-080811ENG-X sections 7.4.1/2/3/5 define this exact first argument
+    # as a dummy character string. Bare U0 is not a generic device family.
+    if (profile_id == "mitsubishi.gxw.q.ladder" and tokens and tokens[0] == "U0"
+            and len(tokens) == _SOCKET_DUMMY_ARITY.get(opcode)):
+        operands[0].update(kind="literal", status="decoded")
+    return operands
+
+
+def _socket_context(opcode: str, operands: list[dict[str, Any]]) -> bool:
+    return (len(operands) == _SOCKET_DUMMY_ARITY.get(opcode) and bool(operands) and
+            operands[0]["kind"] == "literal" and operands[0]["raw_token"] == "U0")
+
+
+def _observed_role(operand: dict[str, Any], opcode: str, operand_count: int,
+                   operands: list[dict[str, Any]] | None = None) -> tuple[str, str]:
+    position = operand["position"]
+    if opcode in _SOCKET_DUMMY_ARITY and operands is not None and _socket_context(opcode, operands):
+        if position == 0:
+            return "read", "SOCKET_DUMMY_LITERAL"
+        roles = ("read", "read", "both" if opcode == "SP.SOCOPEN" else "write")
+        role = roles[position] if position < 3 else ("write" if position == operand_count - 1 else
+                                                   "read" if opcode == "SP.SOCSND" else "write")
+        basis = "SOCKET_MANUAL_OPERAND_ROLE"
+    else:
+        role, basis = _role(opcode, position, operand_count)
+    if ((opcode in _MINED_FORMS or opcode in _SOCKET_DUMMY_ARITY) and
+            role in {"write", "both"} and operand["kind"] != "device"):
+        return "unknown", "MINED_WRITE_TARGET_UNVERIFIED"
     if operand["kind"] == "control":
         form = (operand["raw_token"][0], opcode, operand["position"], operand_count)
         return (("read", "OBSERVED_CONTROL_READ_FORM") if form in _CONTROL_READ_FORMS else
@@ -189,6 +246,39 @@ def _observed_role(operand: dict[str, Any], opcode: str, operand_count: int) -> 
 
 
 def _range_width(opcode: str, position: int, operands: list[dict[str, Any]]) -> tuple[str, int | None, str]:
+    if opcode in _SOCKET_DUMMY_ARITY:
+        if not _socket_context(opcode, operands):
+            return "UNKNOWN", None, "SOCKET_CONTEXT_UNVERIFIED"
+        if position == 2:
+            return "UNKNOWN", None, "RESERVED_OR_MIXED_CONTROL_BLOCK"
+        if position == len(operands) - 1:
+            return "STATIC", 2, "BIT_RESULT_SPAN"
+        if position == 3:
+            return "DYNAMIC", None, "SOCKET_RUNTIME_PAYLOAD_LENGTH"
+        return "STATIC", 1, "MANUAL_WORD_SPAN"
+    if opcode in _MINED_FORMS:
+        form = _MINED_FORMS[opcode].get(len(operands))
+        if form is None:
+            return "UNKNOWN", None, "MINED_FORM_ARITY_UNVERIFIED"
+        span = form[position][1]
+        if isinstance(span, int):
+            return "STATIC", span, "MANUAL_WORD_SPAN"
+        if span == "string":
+            return "DYNAMIC", None, "RUNTIME_NULL_TERMINATED_STRING"
+        kind, number = span.split(":")
+        if kind == "bits":
+            return "STATIC", int(number), "BIT_RESULT_SPAN"
+        if kind == "reserved":
+            return "STATIC", int(number), "RESERVED_WORKSPACE_ACCESS_UNVERIFIED"
+        count = operands[int(number)]
+        # Only a positive plain decimal K spelling is a static count.
+        if (count["kind"] == "constant" and re.fullmatch(r"K-?[0-9]+", count["raw_token"]) and
+                count["constant"].get("index") is None and type(count["constant"]["value"]) is int):
+            value = count["constant"]["value"]
+            if value <= 0 or (kind == "uni" and value > 4):
+                return "UNKNOWN", None, "INVALID_OR_NOOP_COUNT"
+            return "STATIC", value, "MANUAL_K_COUNT"
+        return "DYNAMIC", None, "COUNT_NOT_STATIC_K"
     if opcode in {"BMOV", "BMOVP"} and position in (0, 1):
         count = operands[2] if len(operands) > 2 else None
         if (count and count["kind"] == "constant" and count["constant"]["notation"] == "K"
@@ -207,6 +297,19 @@ def _range_width(opcode: str, position: int, operands: list[dict[str, Any]]) -> 
 
 
 def _coverage(operand: dict[str, Any], opcode: str, operands: list[dict[str, Any]]) -> dict[str, Any]:
+    mined = opcode in _MINED_FORMS or opcode in _SOCKET_DUMMY_ARITY
+    if mined:
+        if (operand["kind"] != "device" and
+                _observed_role(operand, opcode, len(operands), operands)[1] == "MINED_WRITE_TARGET_UNVERIFIED"):
+            return {"state": "UNKNOWN", "word_width": None, "addresses": None,
+                    "reason": "MINED_WRITE_TARGET_UNVERIFIED"}
+        state, width, reason = _range_width(opcode, operand["position"], operands)
+        if reason in {"MINED_FORM_ARITY_UNVERIFIED", "SOCKET_CONTEXT_UNVERIFIED"}:
+            return {"state": "UNKNOWN", "word_width": None, "addresses": None, "reason": reason}
+        if reason == "BIT_RESULT_SPAN" and operand["kind"] != "device":
+            return {"state": "UNKNOWN", "word_width": None, "addresses": None, "reason": "BIT_RESULT_FORM_UNVERIFIED"}
+        if reason == "RESERVED_OR_MIXED_CONTROL_BLOCK":
+            return {"state": "UNKNOWN", "word_width": None, "addresses": None, "reason": reason}
     if operand["kind"] == "constant" and operand["constant"].get("index") is not None:
         return {"state": "DYNAMIC", "word_width": None, "addresses": None,
                 "reason": "INDEXED_CONSTANT_ADDRESS"}
@@ -214,12 +317,24 @@ def _coverage(operand: dict[str, Any], opcode: str, operands: list[dict[str, Any
         return {"state": "NOT_APPLICABLE", "word_width": None, "addresses": None, "reason": "NOT_DECODED_DEVICE"}
     device = operand["device"]
     state, width, reason = _range_width(opcode, operand["position"], operands)
+    bit_result = reason == "BIT_RESULT_SPAN"
+    if bit_result and (device["family"] != "M" or device["word_bit"] is not None or
+                       device["digit_width"] is not None or device["module"] is not None):
+        return {"state": "UNKNOWN", "word_width": None, "addresses": None, "reason": "BIT_RESULT_FORM_UNVERIFIED"}
     if device["index"] is not None or device["indirect"]:
-        return {"state": "DYNAMIC", "word_width": width, "addresses": None,
+        return {"state": "DYNAMIC", "word_width": None if bit_result else width, "addresses": None,
                 "reason": "INDEX_OR_INDIRECT_ADDRESS"}
+    digit_width = device["digit_width"]
+    if mined and bit_result:
+        return {"state": "STATIC", "word_width": None, "addresses": [
+            {"family": device["family"], "address": device["address"] + offset,
+             "module": None, "word_bit": None, "offset": offset} for offset in range(width)],
+                "reason": "BIT_RESULT_SPAN"}
+    if mined and (device["unit"] != "word" or device["word_bit"] is not None or digit_width is not None):
+        if not (opcode == "SUM" and operand["position"] == 0 and digit_width is not None):
+            return {"state": "UNKNOWN", "word_width": width, "addresses": None, "reason": "MINED_WORD_DEVICE_FORM_UNVERIFIED"}
     if state != "STATIC" or width is None:
         return {"state": state, "word_width": width, "addresses": None, "reason": reason}
-    digit_width = device["digit_width"]
     if digit_width is not None:
         if device["family"] not in BIT_FAMILIES or device["word_bit"] is not None:
             return {"state": "UNKNOWN", "word_width": width, "addresses": None,
@@ -256,6 +371,7 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
     unknown_operands = 0
     total_operands = 0
     total_covered = 0
+    incomplete_ranges = False
     for pou_order, pou in enumerate(pous):
         name = pou["name"]
         source_store = str(pou["source_store"])
@@ -275,15 +391,25 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
             if opcode in {"__STMT__", "__NOTE__"}:
                 continue
             raw_tokens = split_operands(operand_text) if operand_text else []
-            operands = [parse_operand(token, position) for position, token in enumerate(raw_tokens)]
+            operands = _instruction_operands(opcode, raw_tokens, profile_id)
+            form_reason = ("MINED_FORM_ARITY_UNVERIFIED" if opcode in _MINED_FORMS and len(operands) not in _MINED_FORMS[opcode]
+                           else "SOCKET_CONTEXT_UNVERIFIED" if opcode in _SOCKET_DUMMY_ARITY and not _socket_context(opcode, operands)
+                           else None)
+            if form_reason:
+                incomplete_ranges = True
+                diagnostics.append({"pou": name, "source_store": source_store, "row": sequence,
+                                    "source_locator": f"_hdb/{source_store}:row:{sequence}",
+                                    "kind": "instruction", "raw_token": opcode, "reason": form_reason})
             total_operands += len(operands)
             if total_operands > MAX_OPERANDS:
                 raise ReferenceIrError("OPERAND_LIMIT")
             for operand in operands:
-                role, basis = _observed_role(operand, opcode, len(operands))
+                role, basis = _observed_role(operand, opcode, len(operands), operands)
                 operand["access"] = role
                 operand["access_basis"] = basis
                 operand["coverage"] = _coverage(operand, opcode, operands)
+                if operand["coverage"]["state"] in {"UNKNOWN", "DYNAMIC", "LIMIT_REACHED"}:
+                    incomplete_ranges = True
                 addresses = operand["coverage"]["addresses"]
                 total_covered += len(addresses) if isinstance(addresses, list) else 0
                 if total_covered > MAX_TOTAL_COVERED_ADDRESSES:
@@ -310,7 +436,7 @@ def project_rows(pous: list[dict[str, Any]], *, input_sha256: str,
         "schema_version": SCHEMA_VERSION,
         "profile_id": profile_id,
         "input": {"sha256": input_sha256},
-        "analysis": {"state": "PARTIAL" if unknown_operands or diagnostics or unknown_instructions else "COMPLETE",
+        "analysis": {"state": "PARTIAL" if unknown_operands or diagnostics or unknown_instructions or incomplete_ranges else "COMPLETE",
                      "official_validation": "NOT_RUN", "production_adoption": "NOT_GRANTED"},
         "coverage": {"occurrences": len(occurrences), "operands": total_operands,
                      "decoded_operands": total_operands - unknown_operands,

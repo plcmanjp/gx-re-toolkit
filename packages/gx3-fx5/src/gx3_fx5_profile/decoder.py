@@ -771,31 +771,35 @@ def _mil_float32_operands(record: str, signature: Any) -> list[str]:
     return [_lddb_float32_spelling(match.group(1)), "D" + str(int(match.group(2)))]
 
 
-def _mil_pointer_control(opcode: str, record: str) -> dict[str, Any] | None:
-    """Consume the complete observed P declaration/CALL and FEND/RET grammar.
+def _mil_pointer_control(
+    opcode: str, record: str, pointer_tag: str = "P"
+) -> dict[str, Any] | None:
+    """Consume exact P/I declarations and non-pulse control instruction grammar.
 
     P is not a generic scalar device. Rendering a stored nonnegative ordinal
     neither validates a CPU pointer range nor an executable control-flow graph.
     """
-    if opcode in {"FEND", "RET"}:
+    if opcode in {"FEND", "RET", "EI", "DI", "IRET"}:
         if record != "mc{op=cl{op=#:ct=a}}":
             raise MiningRequired("record", "MIL control terminator shape is unmined")
         return {"kind": "instruction", "opcode": opcode, "operands": [], "text": None}
-    if opcode not in {"CALL", "Pointer"}:
+    if opcode not in {"CALL", "CJ", "Pointer"}:
         return None
+    if pointer_tag not in {"P", "I"} or (opcode in {"CALL", "CJ"} and pointer_tag != "P"):
+        raise MiningRequired("record", "MIL control pointer tag is unmined")
     operation = (
         r"cl\{op=#:ct=a:as=\[as\{vt=p\}\]\}"
-        if opcode == "CALL" else r"m\{op=#:as=\[as\{vt=p\}\]\}"
+        if opcode in {"CALL", "CJ"} else r"m\{op=#:as=\[as\{vt=p\}\]\}"
     )
     match = re.fullmatch(
         r"mc\{op=" + operation + r":as=\[d\{s=#:a=(\d+):vt=nn\}\]\}", record
     )
     if match is None:
         raise MiningRequired("record", "MIL pointer control shape is unmined")
-    pointer = f"P{int(match.group(1))}"
+    pointer = f"{pointer_tag}{int(match.group(1))}"
     return {
-        "kind": "instruction", "opcode": "CALL" if opcode == "CALL" else pointer,
-        "operands": [pointer] if opcode == "CALL" else [], "text": None,
+        "kind": "instruction", "opcode": opcode if opcode in {"CALL", "CJ"} else pointer,
+        "operands": [pointer] if opcode in {"CALL", "CJ"} else [], "text": None,
     }
 
 
@@ -885,7 +889,9 @@ def _decode_mil(data: str, expected_count: int) -> list[dict[str, Any]]:
                 "opcode", "MIL instruction signature is absent from the approved oracle"
             ) from error
         operands: list[str] = []
-        control = _mil_pointer_control(opcode, record)
+        signature = oracle_signatures[record_index]
+        pointer_tag = signature.header_operand_tags[0] if opcode == "Pointer" else "P"
+        control = _mil_pointer_control(opcode, record, pointer_tag)
         if control is not None:
             # The exact signature has already consumed its operand descriptors.
             cursor += len(oracle_signatures[record_index].header_operand_tags)

@@ -17,10 +17,37 @@ The current profile identifier remains `mitsubishi.gx3.r04cpu.ladder`.
 Broader iQ-R coverage is a development direction, not a current compatibility
 guarantee. See [project direction](../README.md#project-direction).
 
+R object reading projects observed device-comment identities/text and local-label
+names/Comment into the existing IR. These remain PARTIAL; carrier ownership,
+label type/address and POU binding are not decoded. Unsupported rows retain
+opaque identities and findings. See [R object boundaries](r-object-reading.md).
+
 The exact FX5 detector tuples are `(FX5U, 528)`, `(FX5UJ, 529)`, and
 `(FX5S, 530)`. FX5UC is limited to the validated scope sharing the FX5U tuple;
 a separate identity is not inferred. A matching tuple does not establish complete
 decoding of a project or approval for target conversion.
+
+The separate `gx3_fx5_profile.hsc_observed.decode_hsc_observed_settings` API
+projects only the guarded Normal/all-channels-Not-Use observed form. The caller
+supplies a versioned profile of UNIT member and ordered record guards and must
+independently verify that profile's provenance. The profile cannot supply semantic
+labels or mappings. Fixed code checks record envelopes, attributes and nested
+keys before returning `NORMAL` and `ALL_NOT_USE_OBSERVED_VECTOR`. Other values,
+malformed bytes and context mismatches remain unsupported with locations.
+Counter-device encoding remains UNKNOWN; the result never declares project
+completion or official authority. This API does not change Neutral IR or the
+project reading-scope decision, and does not provide general HSC schema support.
+
+The separate `gx3_fx5_profile.cpu_observed.decode_cpu_observed_settings` API
+reads two observed CPU program-name forms and their w3pa mirror under opaque
+context guards. It inventories every supplied QPG carrier, validates the sole
+canonical POU link and its related members, and reports the bounded POU name.
+`OBSERVED_SINGLETON_CONTEXT` describes the independently observed program/POU
+context; it is not a decoded numeric CPU foreign key. Unlinked QPG carriers retain
+their locations and UNKNOWN reasons. The caller must provide the complete member
+inventory and independently authenticate the guard profile and official evidence.
+General execution-type enums, execution-order rules and QPG record-size semantics
+remain UNKNOWN. The API neither changes Neutral IR nor declares project completion.
 
 CPU identity requires exactly one Config node, either the XML root or a direct
 child of its wrapper. Multiple nodes, identical duplicates and nested candidates

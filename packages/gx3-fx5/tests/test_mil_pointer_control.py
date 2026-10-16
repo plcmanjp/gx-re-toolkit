@@ -14,7 +14,7 @@ from test_installed_semantics import synthetic_gx3
 
 
 def pointer_control(marker='CALL', ordinal=255):
-    operation = 'cl{op=#:ct=a:as=[as{vt=p}]}' if marker == 'CALL' else 'm{op=#:as=[as{vt=p}]}'
+    operation = 'cl{op=#:ct=a:as=[as{vt=p}]}' if marker in ('CALL', 'CJ') else 'm{op=#:as=[as{vt=p}]}'
     return f'V1:1:1:{marker}:P:ms{{el=[mc{{op={operation}:as=[d{{s=#:a={ordinal}:vt=nn}}]}}]}}'
 
 
@@ -60,7 +60,7 @@ class PointerControlMilTests(unittest.TestCase):
                 dict(kind='instruction', opcode=marker, operands=[], text=None)])
 
     def test_complete_record_mutations_remain_closed(self):
-        for marker in ('CALL', 'Pointer'):
+        for marker in ('CALL', 'CJ', 'Pointer'):
             data = pointer_control(marker)
             for old, new in (('a=255', 'a=-1'), ('vt=p', 'vt=A16'), ('s=#', 's=0'),
                              ('op=#', 'op=0'), ('vt=nn', 'vt=nx'),
@@ -70,10 +70,15 @@ class PointerControlMilTests(unittest.TestCase):
                              (f'{marker}:P:', f'{marker}:I:'),
                              (f'{marker}:P:', f'{marker}:P:M:')):
                 with self.subTest(marker=marker, mutation=new):
+                    if marker == 'Pointer' and new == f'{marker}:I:':
+                        # I declarations are now an independently supported grammar.
+                        self.assertEqual(_decode_mil(data.replace(old, new), 1)[0]['opcode'], 'I255')
+                        continue
                     self.assert_closed(data.replace(old, new))
             self.assert_closed(data.replace(':as=[d{s=#:a=255:vt=nn}]', ''))
             self.assert_closed(data.replace(':as=[d{s=#:a=255:vt=nn}]', ':as=[d{s=#:a=255:vt=nn}:d{s=#:a=256:vt=nn}]'))
         self.assert_closed(pointer_control().replace('ct=a', 'ct=p'))
+        self.assert_closed(pointer_control('CJ').replace('ct=a', 'ct=p'))
         self.assert_closed(pointer_control('Pointer').replace('op=#:as=', 'op=#:ct=a:as='))
 
     def test_terminator_metadata_operands_and_pulse_remain_closed(self):
@@ -88,11 +93,11 @@ class PointerControlMilTests(unittest.TestCase):
                     self.assert_closed(data.replace(old, new))
 
     def test_pointer_is_not_a_generic_scalar_or_unrelated_opcode(self):
-        for tag in ('P', 'CALL'):
+        for tag in ('P', 'CALL', 'CJ'):
             self.assertNotIn(tag, SCALAR_TAGS)
             with self.assertRaises(MiningRequired):
                 _format_operand([tag], ('scalar', (255,)))
-        self.assert_closed(pointer_control().replace('CALL:P:', 'CJ:P:'))
+        self.assert_closed(pointer_control().replace('CALL:P:', 'JMP:P:'))
         self.assert_closed(pointer_control('Pointer').replace('Pointer:P:', 'Other:P:'))
         signature = mil_stream(pointer_control().replace('CALL:P:', 'CALL:I:'))[0][1]
         with self.assertRaises(UnknownOpcodeSignature):
@@ -110,7 +115,7 @@ class PointerControlMilTests(unittest.TestCase):
         self.assert_closed(data, 11)
 
     def test_control_named_inline_notes_keep_existing_behavior(self):
-        for text in ('CALL', 'Pointer', 'FEND', 'RET'):
+        for text in ('CALL', 'CJ', 'Pointer', 'FEND', 'RET'):
             for flag in ('i', 's'):
                 data = contact().replace(':ms{el=[', f':{text}:{flag}:ms{{el=[')
                 data = data[:-2] + ':ma{k=@FE/NOTE:ps=[p{k=STR:v=#}:p{k=NUM:v=#}]}]}'
@@ -135,6 +140,8 @@ class InstalledPointerControlTests(unittest.TestCase):
     def test_unobserved_controls_remain_opaque_in_installed_cli(self):
         cases = [pointer_control().replace('ct=a', 'ct=p'), pointer_control('Pointer', -1),
                  pointer_control().replace('CALL:P:', 'CALL:I:'),
+                 pointer_control('CJ').replace('ct=a', 'ct=p'),
+                 pointer_control('CJ').replace('CJ:P:', 'CJ:I:'),
                  terminator('RET').replace('ct=a', 'ct=a:extra=1')]
         for data in cases:
             with self.subTest(data=data), tempfile.TemporaryDirectory(prefix='gx-pointer-closed-') as directory:

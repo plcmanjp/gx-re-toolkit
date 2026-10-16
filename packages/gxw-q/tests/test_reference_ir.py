@@ -58,7 +58,7 @@ class GroupedDeviceReferenceTests(unittest.TestCase):
         )
         self.assertEqual((REFERENCE.SCHEMA_NAME, REFERENCE.SCHEMA_VERSION),
                          (result["schema_name"], result["schema_version"]))
-        self.assertEqual("COMPLETE", result["analysis"]["state"])
+        self.assertEqual("PARTIAL", result["analysis"]["state"])
         for occurrence in result["occurrences"][:4]:
             control = occurrence["operands"][0]
             self.assertEqual(("decoded", "read", "OBSERVED_CONTROL_READ_FORM"),
@@ -80,7 +80,7 @@ class GroupedDeviceReferenceTests(unittest.TestCase):
             [{"name": "MAIN", "source_store": "synthetic", "source_digest": "f" * 64,
               "rows": rows}], input_sha256="a" * 64,
         )
-        self.assertEqual("COMPLETE", result["analysis"]["state"])
+        self.assertEqual("PARTIAL", result["analysis"]["state"])
         for occurrence, positions in zip(result["occurrences"], ((0, 1), (1,))):
             for position in positions:
                 with self.subTest(opcode=occurrence["record"]["opcode"], position=position):
